@@ -3,6 +3,7 @@
 function saveSettings() {
     localStorage.setItem("instants", document.getElementById("instants").checked);
     localStorage.setItem("outliers", document.getElementById("outliers").value);
+    localStorage.setItem("trash_enabled", document.getElementById("trash_enabled").checked);
     localStorage.setItem("y12", document.getElementById("y12").value);
     localStorage.setItem("y3", document.getElementById("y3").value);
 
@@ -18,6 +19,8 @@ function saveSettings() {
 function restoreDefaults() {
     localStorage.setItem("instants", true);
     document.getElementById("instants").checked = true;
+    localStorage.setItem("trash_enabled", false);
+    document.getElementById("trash_enabled").checked = false;
     localStorage.setItem("y12", 2500);
     document.getElementById("y12").value = 2500;
     localStorage.setItem("y3", 4000);
@@ -45,8 +48,12 @@ function loadSettings() {
     if (localStorage.getItem("outliers") == undefined) {
         localStorage.setItem("outliers", 5000);
     }
-    document.getElementById("instants").checked = localStorage.getItem("instants");
+    if (localStorage.getItem("trash_enabled") == undefined) {
+        localStorage.setItem("trash_enabled", false);
+    }
+    document.getElementById("instants").checked = localStorage.getItem("instants") === "true";
     document.getElementById("y12").value = localStorage.getItem("y12");
     document.getElementById("y3").value = localStorage.getItem("y3");
     document.getElementById("outliers").value = localStorage.getItem("outliers");
+    document.getElementById("trash_enabled").checked = localStorage.getItem("trash_enabled") === "true";
 }

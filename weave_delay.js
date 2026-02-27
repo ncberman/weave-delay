@@ -50,10 +50,11 @@ async function fetchWCLv1(path) {
 
 class Report {
 
-    constructor(reportId, playerName) {
+    constructor(reportId, playerName, withTrash) {
         this.reportId = reportId;
         this.playerName = playerName;
         this.plotData = {};
+        this.withTrash = withTrash;
     }
 
     async fetchData() {
@@ -88,8 +89,9 @@ class Report {
             return;
         }
 
+        let trashEnabled = document.getElementById("trash_enabled").checked;
         for (let fight of this.data.fights) {
-            if (fight.boss != 0) {
+            if (trashEnabled || fight.boss != 0) {
                 this.casts[fight.id] = await fetchWCLv1(`report/events/casts/${this.reportId}?start=${fight.start_time}&end=${fight.end_time}&sourceid=${source}&options=66&`);
             }
         }
@@ -301,11 +303,13 @@ function selectReport() {
     //resets color
     el.style.borderColor = null;
     console.log("checking after");
-    if (!(reportId in reports)) reports[reportId] = new Report(reportId, getParameterByName('player'));
+    let trashEnabled = document.getElementById("trash_enabled").checked;
+    if (!(reportId in reports) || (!reports[reportId].withTrash && trashEnabled)) 
+        reports[reportId] = new Report(reportId, getParameterByName('player'), trashEnabled);
     reports[reportId].fetchData().then(() => {
         console.log("Starting to add the fights....");
         for (let fight of reports[reportId].data.fights) {
-            if (fight.boss != 0) {
+            if (trashEnabled || fight.boss != 0) {
                 let el_f = document.createElement("option");
                 el_f.value = reportId + ";" + fight.id + ";" + fight.start_time + ";" + fight.name;
                 el_f.textContent = fight.name + " - " + fight.id;
