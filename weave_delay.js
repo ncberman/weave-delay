@@ -2,7 +2,9 @@
 
 const throttleTime = 150;
 const reports = {};
-const apikey = "6e350c0a7ff8fbafa62f57069aabd33b";
+const wclUserGraphqlUrl = "https://www.warcraftlogs.com/api/v2/user";
+const wclDebugEntries = [];
+const maxWclDebugEntries = 20;
 
 let nextRequestTime = 0;
 
@@ -16,36 +18,292 @@ function getParameterByName(name, url = window.location.href) {
 }
 
 function printError(e) {
-    console.log(e);
-    alert("Error:\n" + e + "\n\nRefresh the page to start again.");
+    const message = e && e.message ? e.message : e;
+    console.log(message);
+    alert("Error:\n" + message + "\n\nRefresh the page to start again.");
 }
 
 function sleep(ms) {
     return new Promise(f => setTimeout(f, ms));
 }
 
-//function to resolve any API requests
-async function fetchWCLv1(path) {
-    //ensures that requests are not too fast
-    console.log("fetching data from WCL....");
+function summarizeDebugValue(value, depth = 0) {
+    if (depth > 4) {
+        return "[max-depth]";
+    }
+    if (Array.isArray(value)) {
+        const maxItems = 25;
+        if (value.length > maxItems) {
+            return {
+                __arrayLength: value.length,
+                sample: value.slice(0, maxItems).map(item => summarizeDebugValue(item, depth + 1))
+            };
+        }
+        return value.map(item => summarizeDebugValue(item, depth + 1));
+    }
+    if (value && typeof value === "object") {
+        const result = {};
+        for (const [key, nestedValue] of Object.entries(value)) {
+            result[key] = summarizeDebugValue(nestedValue, depth + 1);
+        }
+        return result;
+    }
+    if (typeof value === "string" && value.length > 500) {
+        return value.slice(0, 500) + "...[truncated]";
+    }
+    return value;
+}
+
+function pushWclDebugEntry(label, payload) {
+    const entry = {
+        at: new Date().toISOString(),
+        label: label,
+        payload: summarizeDebugValue(payload)
+    };
+    wclDebugEntries.push(entry);
+    if (wclDebugEntries.length > maxWclDebugEntries) {
+        wclDebugEntries.splice(0, wclDebugEntries.length - maxWclDebugEntries);
+    }
+    renderWclDebugOutput();
+}
+
+function renderWclDebugOutput() {
+    const output = document.getElementById("apiDebugOutput");
+    if (!output) {
+        return;
+    }
+    output.textContent = JSON.stringify(wclDebugEntries, null, 2);
+}
+
+function clearWclDebugOutput() {
+    wclDebugEntries.length = 0;
+    renderWclDebugOutput();
+}
+
+async function fetchWCLUserGraphql(query, variables = {}) {
+    console.log("fetching data from WCL v2...");
     let t = (new Date).getTime();
     nextRequestTime = Math.max(nextRequestTime, t);
     let d = nextRequestTime - t;
     nextRequestTime += throttleTime;
     await sleep(d);
-    console.assert(path.length < 1900, "URL may be too long: " + path);
-    let response = await fetch(`https://www.warcraftlogs.com:443/v1/${path}translate=true&api_key=${apikey}`);
-    if (!response) {
-        throw "Could not fetch " + path;
+
+    if (typeof ensureAuthAccessToken !== "function") {
+        throw new Error("OAuth module failed to load. Refresh the page and try again.");
     }
-    if (response.status != 200) {
-        if (response.type == "cors") {
-            throw "Fetch error. Warcraftlogs may be down or logs private.";
+    pushWclDebugEntry("GraphQL request", {
+        query: query,
+        variables: variables
+    });
+
+    async function run(accessToken) {
+        return fetch(wclUserGraphqlUrl, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${accessToken}`
+            },
+            body: JSON.stringify({ query: query, variables: variables })
+        });
+    }
+
+    let accessToken = await ensureAuthAccessToken();
+    let response = await run(accessToken);
+
+    if (response.status === 401 && typeof refreshAuthAccessToken === "function") {
+        const refreshedToken = await refreshAuthAccessToken();
+        if (refreshedToken) {
+            response = await run(refreshedToken);
         }
-        throw "Fetch error.";
     }
-    let json = await response.json();
-    return json;
+
+    if (response.status === 401 || response.status === 403) {
+        pushWclDebugEntry("GraphQL auth failure", { status: response.status });
+        if (typeof disconnectWarcraftLogs === "function") {
+            disconnectWarcraftLogs();
+        }
+        throw new Error("Warcraft Logs authorization failed. Reconnect Warcraft Logs in Settings.");
+    }
+    if (!response.ok) {
+        pushWclDebugEntry("GraphQL HTTP failure", { status: response.status });
+        throw new Error("Fetch error (" + response.status + ").");
+    }
+
+    const payload = await response.json();
+    pushWclDebugEntry("GraphQL response", payload);
+    if (payload.errors && payload.errors.length) {
+        throw new Error("Warcraft Logs API error: " + payload.errors[0].message);
+    }
+    return payload.data;
+}
+
+function normalizeEvent(rawEvent, abilityByGameId = {}) {
+    if (!rawEvent) {
+        return null;
+    }
+    const timestamp = Number(rawEvent.timestamp);
+    const abilityName = rawEvent.ability && rawEvent.ability.name
+        ? rawEvent.ability.name
+        : rawEvent.abilityName
+            ? rawEvent.abilityName
+            : (function () {
+                const abilityId = Number(
+                    rawEvent.abilityGameID ||
+                    (rawEvent.ability && rawEvent.ability.gameID) ||
+                    (typeof rawEvent.ability === "number" ? rawEvent.ability : NaN)
+                );
+                if (!Number.isFinite(abilityId)) {
+                    return "";
+                }
+                return abilityByGameId[abilityId] || ("Ability " + abilityId);
+            })();
+    if (!Number.isFinite(timestamp) || !abilityName) {
+        return null;
+    }
+    const canonicalAbilityName = normalizeAbilityName(abilityName);
+    return {
+        timestamp: timestamp,
+        ability: {
+            name: canonicalAbilityName
+        }
+    };
+}
+
+function normalizeAbilityName(name) {
+    if (!name) {
+        return name;
+    }
+    const trimmed = String(name).trim();
+    const meleeAliases = new Set([
+        "Attack",
+        "Auto Attack",
+        "Main Hand",
+        "Off Hand",
+        "Melee Swing",
+        "Melee (Main Hand)",
+        "Melee (Off Hand)"
+    ]);
+    if (meleeAliases.has(trimmed)) {
+        return "Melee";
+    }
+    if (/^Ability\s+(1|6603)$/i.test(trimmed)) {
+        // 6603 is the common WoW auto-attack/melee swing spell id.
+        return "Melee";
+    }
+    return trimmed;
+}
+
+async function fetchReportMeta(reportCode) {
+    const data = await fetchWCLUserGraphql(`
+query ReportMeta($code: String!) {
+  reportData {
+    report(code: $code) {
+      fights {
+        id
+        name
+        startTime
+        endTime
+        encounterID
+      }
+      masterData {
+        actors {
+          id
+          name
+          type
+        }
+        abilities {
+          gameID
+          name
+        }
+      }
+    }
+  }
+}`, { code: reportCode });
+
+    const report = data && data.reportData ? data.reportData.report : null;
+    if (!report) {
+        throw new Error("Could not load report metadata.");
+    }
+
+    const fights = (report.fights || []).map(fight => ({
+        id: fight.id,
+        name: fight.name,
+        start_time: fight.startTime,
+        end_time: fight.endTime,
+        boss: fight.encounterID || 0
+    }));
+
+    const friendlies = (report.masterData && report.masterData.actors ? report.masterData.actors : [])
+        .filter(actor => actor.type === "Player")
+        .map(actor => ({
+            id: actor.id,
+            name: actor.name
+        }));
+
+    const abilityByGameId = {};
+    const abilities = report.masterData && report.masterData.abilities ? report.masterData.abilities : [];
+    for (const ability of abilities) {
+        if (ability && Number.isFinite(Number(ability.gameID)) && ability.name) {
+            abilityByGameId[Number(ability.gameID)] = ability.name;
+        }
+    }
+
+    return {
+        fights: fights,
+        friendlies: friendlies,
+        abilityByGameId: abilityByGameId
+    };
+}
+
+async function fetchFightCasts(reportCode, fightId, sourceId, startTime, endTime, abilityByGameId = {}) {
+    let allEvents = [];
+    let pageStart = startTime;
+
+    while (true) {
+        const data = await fetchWCLUserGraphql(`
+query ReportCasts($code: String!, $fightIDs: [Int!], $sourceID: Int, $startTime: Float, $endTime: Float, $viewOptions: Int) {
+  reportData {
+    report(code: $code) {
+      events(dataType: Casts, fightIDs: $fightIDs, sourceID: $sourceID, startTime: $startTime, endTime: $endTime, viewOptions: $viewOptions, translate: true) {
+        data
+        nextPageTimestamp
+      }
+    }
+  }
+}`, {
+            code: reportCode,
+            fightIDs: [Number(fightId)],
+            sourceID: Number(sourceId),
+            startTime: Number(pageStart),
+            endTime: Number(endTime),
+            viewOptions: 66
+        });
+
+        const eventsPayload = data && data.reportData && data.reportData.report
+            ? data.reportData.report.events
+            : null;
+        if (!eventsPayload) {
+            throw new Error("Could not load cast events.");
+        }
+
+        const rawEvents = eventsPayload.data || [];
+        const pageEvents = rawEvents
+            .map(event => normalizeEvent(event, abilityByGameId))
+            .filter(Boolean);
+        if (rawEvents.length > 0 && pageEvents.length === 0) {
+            console.log("WCL raw event shape (first event):", rawEvents[0]);
+        }
+        allEvents = allEvents.concat(pageEvents);
+
+        if (!eventsPayload.nextPageTimestamp || eventsPayload.nextPageTimestamp >= endTime) {
+            break;
+        }
+        pageStart = eventsPayload.nextPageTimestamp;
+    }
+
+    return {
+        events: allEvents
+    };
 }
 
 class Report {
@@ -64,7 +322,8 @@ class Report {
             return;
         }
         this.friendlies = {};
-        this.data = await fetchWCLv1(`report/fights/${this.reportId}?`);
+        this.data = await fetchReportMeta(this.reportId);
+        this.abilityByGameId = this.data.abilityByGameId || {};
         console.log("done getting data");
         for (let friendlies of this.data.friendlies) {
             this.friendlies[friendlies.name] = friendlies.id;
@@ -84,7 +343,11 @@ class Report {
         let source = this.friendlies[this.playerName];
         if (source == undefined) {
             enableInput(true);
-            printError("The player defined is not part of the combat log.");
+            const availablePlayers = Object.keys(this.friendlies).sort((a, b) => a.localeCompare(b));
+            const playerListText = availablePlayers.length
+                ? "\n\nPlayers in this log:\n- " + availablePlayers.join("\n- ")
+                : "\n\nNo player entries were found in the report master data.";
+            printError("The player defined is not part of the combat log." + playerListText);
             location.href = location.origin + location.pathname + `?id=${getParameterByName("id")}`;
             return;
         }
@@ -92,7 +355,7 @@ class Report {
         let trashEnabled = document.getElementById("trash_enabled").checked;
         for (let fight of this.data.fights) {
             if (trashEnabled || fight.boss != 0) {
-                this.casts[fight.id] = await fetchWCLv1(`report/events/casts/${this.reportId}?start=${fight.start_time}&end=${fight.end_time}&sourceid=${source}&options=66&`);
+                this.casts[fight.id] = await fetchFightCasts(this.reportId, fight.id, source, fight.start_time, fight.end_time, this.abilityByGameId);
             }
         }
         console.log("done in casts");
@@ -101,7 +364,22 @@ class Report {
     }
 
     doMath(fightId, start_time, name) {
-        let mutable_casts = this.casts[fightId].events.slice();
+        let mutable_casts = this.casts[fightId].events
+            .filter(cast => cast && cast.ability && cast.ability.name && Number.isFinite(cast.timestamp))
+            .slice()
+            .sort((a, b) => a.timestamp - b.timestamp);
+
+        if (mutable_casts.length === 0) {
+            d3.selectAll("svg > *").remove();
+            alert("No cast events found for this fight/player. Try another fight or verify the player name.");
+            return;
+        }
+        const abilityDebugCounts = {};
+        for (const cast of mutable_casts) {
+            const ability = cast.ability.name;
+            abilityDebugCounts[ability] = (abilityDebugCounts[ability] || 0) + 1;
+        }
+        console.log("Ability counts before whitelist:", abilityDebugCounts);
         //console.log(this.casts);
         //this removes any ability in blacklist from the cast list, also removes any windfury proccs
         let melee_list = ["Melee", "Raptor Strike"];
@@ -185,7 +463,12 @@ class Report {
 
         show("plot");
         d3.selectAll("svg > *").remove();
-        let x_limit = (mutable_casts[mutable_casts.length - 1].timestamp - start_time) / 1000 + 10;
+        const lastCast = mutable_casts[mutable_casts.length - 1];
+        if (!lastCast || !Number.isFinite(lastCast.timestamp)) {
+            alert("Could not build graph range from cast events.");
+            return;
+        }
+        let x_limit = (lastCast.timestamp - start_time) / 1000 + 10;
         drawPlot(zip1, average1, x_limit, y12, "#svg1", "Ability to weave time on " + name);
         drawPlot(zip2, average2, x_limit, y12, "#svg2", "Weave to ability time on " + name);
         drawPlot(zip3, average3, x_limit, y3, "#svg3", "Total weave time on " + name);

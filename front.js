@@ -26,6 +26,7 @@ function showAndHideDisclaimer() {
     hide("changelog");
     hide("tutorial");
     hide("settings");
+    hide("apiDebug");
 }
 
 function showAndHideChangelog() {
@@ -33,12 +34,14 @@ function showAndHideChangelog() {
     hide("disclaimer");
     hide("tutorial");
     hide("settings");
+    hide("apiDebug");
 }
 function showAndHideTutorial() {
     showAndHide("tutorial");
     hide("changelog");
     hide("disclaimer");
     hide("settings");
+    hide("apiDebug");
 }
 
 function showAndHideSettings() {
@@ -46,11 +49,31 @@ function showAndHideSettings() {
     hide("changelog");
     hide("disclaimer");
     hide("tutorial");
+    hide("apiDebug");
 }
 
-function loadPage() {
+function showAndHideApiDebug() {
+    showAndHide("apiDebug");
+    hide("changelog");
+    hide("disclaimer");
+    hide("tutorial");
+    hide("settings");
+}
+
+async function loadPage() {
     scroll(0, 0);
     loadSettings();
+    try {
+        if (typeof initializeOAuthFromUrl === "function") {
+            await initializeOAuthFromUrl();
+        }
+    } catch (e) {
+        console.error(e);
+        alert("OAuth error:\n" + e.message + "\n\nReconnect Warcraft Logs in Settings.");
+    }
+    if (typeof refreshAuthStatusUI === "function") {
+        refreshAuthStatusUI();
+    }
     const idParam = getParameterByName('id');
     //const fightParam = getParameterByName('fight');
     const playerParam = getParameterByName('player');

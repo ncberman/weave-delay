@@ -13,8 +13,9 @@
         gtag('config', 'G-YNZ372ED1D');
     </script>
     <meta charset="UTF-8">
-    <script src="weave_delay.js"></script>
-    <script src="front.js"></script>
+    <script src="oauth.js"></script>
+    <script src="weave_delay.js?v=20260423b"></script>
+    <script src="front.js?v=20260423b"></script>
     <script src="settings.js"></script>
     <script src="https://d3js.org/d3.v4.js"></script>
     <title>weave-delay</title>
@@ -122,6 +123,7 @@
         <button onclick="showAndHideChangelog()">Changelog</button>
         <button onclick="showAndHideTutorial()">Tutorial</button>
         <button onclick="showAndHideSettings()">Settings</button>
+        <button onclick="showAndHideApiDebug()">API Debug</button>
         <div id="settings" style="display:none">
             <br>
             <fieldset>
@@ -135,6 +137,14 @@
                     <br>
                     <label for="trash_enabled">Add trash fights to the list</label>
                     <input type="checkbox" id="trash_enabled" checked="">
+                    <br>
+                    <label for="oauth_client_id">Warcraft Logs OAuth Client ID</label>
+                    <input type="text" id="oauth_client_id" placeholder="Enter your OAuth client id"></input>
+                    <br>
+                    <button type="button" onclick="connectWarcraftLogs()">Connect Warcraft Logs</button>
+                    <button type="button" onclick="disconnectWarcraftLogs()">Disconnect</button>
+                    <br>
+                    <span id="oauth_status">Warcraft Logs auth: disconnected</span>
                 </fieldset>
                 <br>
                 <fieldset>
@@ -241,6 +251,11 @@
                         href="https://discord.gg/classichunter">
                         discord</a>, so I do not get flooded with friend requests. </li>
             </ol>
+        </div>
+        <div id="apiDebug" style="display:none">
+            <p>Warcraft Logs API debug output (latest requests and responses).</p>
+            <button type="button" onclick="clearWclDebugOutput()">Clear debug output</button>
+            <pre id="apiDebugOutput" style="white-space: pre-wrap; max-height: 450px; overflow: auto; border: 1px solid white; padding: 8px;"></pre>
         </div>
     </div>
 </body>

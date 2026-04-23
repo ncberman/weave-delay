@@ -6,6 +6,7 @@ function saveSettings() {
     localStorage.setItem("trash_enabled", document.getElementById("trash_enabled").checked);
     localStorage.setItem("y12", document.getElementById("y12").value);
     localStorage.setItem("y3", document.getElementById("y3").value);
+    localStorage.setItem("oauth_client_id", document.getElementById("oauth_client_id").value.trim());
 
 
 
@@ -27,10 +28,15 @@ function restoreDefaults() {
     document.getElementById("y3").value = 4000;
     localStorage.setItem("outliers", 5000);
     document.getElementById("outliers").value = 5000;
+    localStorage.setItem("oauth_client_id", "");
+    document.getElementById("oauth_client_id").value = "";
 
     console.log("local storage");
     for (let i = 0; i < localStorage.length; i++) {
         console.log(localStorage.key(i) + "=[" + localStorage.getItem(localStorage.key(i)) + "]");
+    }
+    if (typeof refreshAuthStatusUI === "function") {
+        refreshAuthStatusUI();
     }
     selectFight();
 }
@@ -51,9 +57,16 @@ function loadSettings() {
     if (localStorage.getItem("trash_enabled") == undefined) {
         localStorage.setItem("trash_enabled", false);
     }
+    if (localStorage.getItem("oauth_client_id") == undefined) {
+        localStorage.setItem("oauth_client_id", "");
+    }
     document.getElementById("instants").checked = localStorage.getItem("instants") === "true";
     document.getElementById("y12").value = localStorage.getItem("y12");
     document.getElementById("y3").value = localStorage.getItem("y3");
     document.getElementById("outliers").value = localStorage.getItem("outliers");
     document.getElementById("trash_enabled").checked = localStorage.getItem("trash_enabled") === "true";
+    document.getElementById("oauth_client_id").value = localStorage.getItem("oauth_client_id");
+    if (typeof refreshAuthStatusUI === "function") {
+        refreshAuthStatusUI();
+    }
 }
