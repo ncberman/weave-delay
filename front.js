@@ -26,7 +26,6 @@ function showAndHideDisclaimer() {
     hide("changelog");
     hide("tutorial");
     hide("settings");
-    hide("apiDebug");
 }
 
 function showAndHideChangelog() {
@@ -34,14 +33,12 @@ function showAndHideChangelog() {
     hide("disclaimer");
     hide("tutorial");
     hide("settings");
-    hide("apiDebug");
 }
 function showAndHideTutorial() {
     showAndHide("tutorial");
     hide("changelog");
     hide("disclaimer");
     hide("settings");
-    hide("apiDebug");
 }
 
 function showAndHideSettings() {
@@ -49,15 +46,6 @@ function showAndHideSettings() {
     hide("changelog");
     hide("disclaimer");
     hide("tutorial");
-    hide("apiDebug");
-}
-
-function showAndHideApiDebug() {
-    showAndHide("apiDebug");
-    hide("changelog");
-    hide("disclaimer");
-    hide("tutorial");
-    hide("settings");
 }
 
 async function loadPage() {
@@ -75,24 +63,10 @@ async function loadPage() {
         refreshAuthStatusUI();
     }
     const idParam = getParameterByName('id');
-    //const fightParam = getParameterByName('fight');
-    const playerParam = getParameterByName('player');
 
     if (idParam) {
         document.getElementById("code").value = idParam;
     }
-
-    if (idParam && playerParam) {
-        console.log("Setting params...");
-        document.getElementById("pname").value = playerParam;
-        selectReport();
-    }
-
-    //if (fightParam) {
-    //    let selectedIndex = parseInt(fightParam);
-    //    sleep(5000);
-    //    selectFight(selectedIndex);
-    //}
 }
 
 

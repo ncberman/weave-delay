@@ -3,8 +3,6 @@
 const throttleTime = 150;
 const reports = {};
 const wclUserGraphqlUrl = "https://www.warcraftlogs.com/api/v2/user";
-const wclDebugEntries = [];
-const maxWclDebugEntries = 20;
 
 let nextRequestTime = 0;
 
@@ -27,57 +25,27 @@ function sleep(ms) {
     return new Promise(f => setTimeout(f, ms));
 }
 
-function summarizeDebugValue(value, depth = 0) {
-    if (depth > 4) {
-        return "[max-depth]";
+function calculateMedian(values) {
+    if (!values || values.length === 0) {
+        return 0;
     }
-    if (Array.isArray(value)) {
-        const maxItems = 25;
-        if (value.length > maxItems) {
-            return {
-                __arrayLength: value.length,
-                sample: value.slice(0, maxItems).map(item => summarizeDebugValue(item, depth + 1))
-            };
-        }
-        return value.map(item => summarizeDebugValue(item, depth + 1));
+    const sorted = values.slice().sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 0) {
+        return (sorted[mid - 1] + sorted[mid]) / 2;
     }
-    if (value && typeof value === "object") {
-        const result = {};
-        for (const [key, nestedValue] of Object.entries(value)) {
-            result[key] = summarizeDebugValue(nestedValue, depth + 1);
-        }
-        return result;
-    }
-    if (typeof value === "string" && value.length > 500) {
-        return value.slice(0, 500) + "...[truncated]";
-    }
-    return value;
+    return sorted[mid];
 }
 
-function pushWclDebugEntry(label, payload) {
-    const entry = {
-        at: new Date().toISOString(),
-        label: label,
-        payload: summarizeDebugValue(payload)
-    };
-    wclDebugEntries.push(entry);
-    if (wclDebugEntries.length > maxWclDebugEntries) {
-        wclDebugEntries.splice(0, wclDebugEntries.length - maxWclDebugEntries);
+function formatDurationMs(durationMs) {
+    const totalSeconds = Math.max(0, Math.floor(Number(durationMs) / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours > 0) {
+        return String(hours) + ":" + String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
     }
-    renderWclDebugOutput();
-}
-
-function renderWclDebugOutput() {
-    const output = document.getElementById("apiDebugOutput");
-    if (!output) {
-        return;
-    }
-    output.textContent = JSON.stringify(wclDebugEntries, null, 2);
-}
-
-function clearWclDebugOutput() {
-    wclDebugEntries.length = 0;
-    renderWclDebugOutput();
+    return String(minutes) + ":" + String(seconds).padStart(2, "0");
 }
 
 async function fetchWCLUserGraphql(query, variables = {}) {
@@ -91,10 +59,6 @@ async function fetchWCLUserGraphql(query, variables = {}) {
     if (typeof ensureAuthAccessToken !== "function") {
         throw new Error("OAuth module failed to load. Refresh the page and try again.");
     }
-    pushWclDebugEntry("GraphQL request", {
-        query: query,
-        variables: variables
-    });
 
     async function run(accessToken) {
         return fetch(wclUserGraphqlUrl, {
@@ -118,19 +82,16 @@ async function fetchWCLUserGraphql(query, variables = {}) {
     }
 
     if (response.status === 401 || response.status === 403) {
-        pushWclDebugEntry("GraphQL auth failure", { status: response.status });
         if (typeof disconnectWarcraftLogs === "function") {
             disconnectWarcraftLogs();
         }
         throw new Error("Warcraft Logs authorization failed. Reconnect Warcraft Logs in Settings.");
     }
     if (!response.ok) {
-        pushWclDebugEntry("GraphQL HTTP failure", { status: response.status });
         throw new Error("Fetch error (" + response.status + ").");
     }
 
     const payload = await response.json();
-    pushWclDebugEntry("GraphQL response", payload);
     if (payload.errors && payload.errors.length) {
         throw new Error("Warcraft Logs API error: " + payload.errors[0].message);
     }
@@ -161,8 +122,15 @@ function normalizeEvent(rawEvent, abilityByGameId = {}) {
         return null;
     }
     const canonicalAbilityName = normalizeAbilityName(abilityName);
+    const sourceId = Number(
+        rawEvent.sourceID ??
+        rawEvent.sourceId ??
+        (rawEvent.source && rawEvent.source.id) ??
+        Number.NaN
+    );
     return {
         timestamp: timestamp,
+        sourceID: Number.isFinite(sourceId) ? sourceId : null,
         ability: {
             name: canonicalAbilityName
         }
@@ -210,6 +178,7 @@ query ReportMeta($code: String!) {
           id
           name
           type
+          subType
         }
         abilities {
           gameID
@@ -233,12 +202,7 @@ query ReportMeta($code: String!) {
         boss: fight.encounterID || 0
     }));
 
-    const friendlies = (report.masterData && report.masterData.actors ? report.masterData.actors : [])
-        .filter(actor => actor.type === "Player")
-        .map(actor => ({
-            id: actor.id,
-            name: actor.name
-        }));
+    const actors = report.masterData && report.masterData.actors ? report.masterData.actors : [];
 
     const abilityByGameId = {};
     const abilities = report.masterData && report.masterData.abilities ? report.masterData.abilities : [];
@@ -250,7 +214,7 @@ query ReportMeta($code: String!) {
 
     return {
         fights: fights,
-        friendlies: friendlies,
+        actors: actors,
         abilityByGameId: abilityByGameId
     };
 }
@@ -273,7 +237,7 @@ query ReportCasts($code: String!, $fightIDs: [Int!], $sourceID: Int, $startTime:
 }`, {
             code: reportCode,
             fightIDs: [Number(fightId)],
-            sourceID: Number(sourceId),
+            sourceID: sourceId === null || sourceId === undefined ? null : Number(sourceId),
             startTime: Number(pageStart),
             endTime: Number(endTime),
             viewOptions: 66
@@ -307,96 +271,121 @@ query ReportCasts($code: String!, $fightIDs: [Int!], $sourceID: Int, $startTime:
 }
 
 class Report {
-
-    constructor(reportId, playerName, withTrash) {
+    constructor(reportId, withTrash) {
         this.reportId = reportId;
-        this.playerName = playerName;
-        this.plotData = {};
         this.withTrash = withTrash;
+        this.fightHunterCasts = {};
+        this.fightHunterMetrics = {};
+        this.fightAllCasts = {};
     }
 
     async fetchData() {
-        console.log("inside fetchData...");
         if ("data" in this) {
-            ("data exists, returning...");
             return;
         }
-        this.friendlies = {};
         this.data = await fetchReportMeta(this.reportId);
         this.abilityByGameId = this.data.abilityByGameId || {};
-        console.log("done getting data");
-        for (let friendlies of this.data.friendlies) {
-            this.friendlies[friendlies.name] = friendlies.id;
-        }
-        console.log(this.friendlies);
-        this.fetchCasts();
+        this.actors = this.data.actors || [];
+        this.players = this.actors.filter(actor => actor && actor.type === "Player");
     }
 
-    async fetchCasts() {
-        console.log("inside fetchCasts...");
-        if ("casts" in this) {
-            console.log("casts exists, returning...");
-            return;
-        }
-        enableInput(false);
-        this.casts = {};
-        let source = this.friendlies[this.playerName];
-        if (source == undefined) {
-            enableInput(true);
-            const availablePlayers = Object.keys(this.friendlies).sort((a, b) => a.localeCompare(b));
-            const playerListText = availablePlayers.length
-                ? "\n\nPlayers in this log:\n- " + availablePlayers.join("\n- ")
-                : "\n\nNo player entries were found in the report master data.";
-            printError("The player defined is not part of the combat log." + playerListText);
-            location.href = location.origin + location.pathname + `?id=${getParameterByName("id")}`;
-            return;
-        }
-
-        let trashEnabled = document.getElementById("trash_enabled").checked;
-        for (let fight of this.data.fights) {
-            if (trashEnabled || fight.boss != 0) {
-                this.casts[fight.id] = await fetchFightCasts(this.reportId, fight.id, source, fight.start_time, fight.end_time, this.abilityByGameId);
-            }
-        }
-        console.log("done in casts");
-        enableInput(true);
-        selectFight();
+    isHunterActor(actor) {
+        const classText = actor && actor.subType ? String(actor.subType).toLowerCase() : "";
+        return classText.includes("hunter");
     }
 
-    doMath(fightId, start_time, name) {
-        let mutable_casts = this.casts[fightId].events
+    getHunters() {
+        return this.players.filter(actor => this.isHunterActor(actor));
+    }
+
+    async getFightHunterCasts(fight, hunter) {
+        const fightKey = String(fight.id);
+        const hunterKey = String(hunter.id);
+        if (!this.fightHunterCasts[fightKey]) {
+            this.fightHunterCasts[fightKey] = {};
+        }
+        if (this.fightHunterCasts[fightKey][hunterKey]) {
+            return this.fightHunterCasts[fightKey][hunterKey];
+        }
+
+        const allFightCasts = await this.getFightAllCasts(fight);
+        const filteredEvents = (allFightCasts.events || []).filter(event => event.sourceID === Number(hunter.id));
+
+        let result = { events: filteredEvents };
+        // Fallback for schemas that don't include source ID in event rows.
+        if (filteredEvents.length === 0 && (allFightCasts.events || []).some(event => event.sourceID === null)) {
+            result = await fetchFightCasts(
+                this.reportId,
+                fight.id,
+                hunter.id,
+                fight.start_time,
+                fight.end_time,
+                this.abilityByGameId
+            );
+        }
+
+        this.fightHunterCasts[fightKey][hunterKey] = result;
+        return result;
+    }
+
+    async getFightAllCasts(fight) {
+        const fightKey = String(fight.id);
+        if (this.fightAllCasts[fightKey]) {
+            return this.fightAllCasts[fightKey];
+        }
+        const result = await fetchFightCasts(
+            this.reportId,
+            fight.id,
+            null,
+            fight.start_time,
+            fight.end_time,
+            this.abilityByGameId
+        );
+        this.fightAllCasts[fightKey] = result;
+        return result;
+    }
+
+    getCachedFightHunterMetrics(fight, hunter) {
+        const fightKey = String(fight.id);
+        const hunterKey = String(hunter.id);
+        if (!this.fightHunterMetrics[fightKey]) {
+            return null;
+        }
+        return this.fightHunterMetrics[fightKey][hunterKey] ?? null;
+    }
+
+    setCachedFightHunterMetrics(fight, hunter, metrics) {
+        const fightKey = String(fight.id);
+        const hunterKey = String(hunter.id);
+        if (!this.fightHunterMetrics[fightKey]) {
+            this.fightHunterMetrics[fightKey] = {};
+        }
+        this.fightHunterMetrics[fightKey][hunterKey] = metrics;
+    }
+
+    buildMetricsFromEvents(events, startTime) {
+        let mutable_casts = events
             .filter(cast => cast && cast.ability && cast.ability.name && Number.isFinite(cast.timestamp))
             .slice()
             .sort((a, b) => a.timestamp - b.timestamp);
 
         if (mutable_casts.length === 0) {
-            d3.selectAll("svg > *").remove();
-            alert("No cast events found for this fight/player. Try another fight or verify the player name.");
-            return;
-        }
-        const abilityDebugCounts = {};
-        for (const cast of mutable_casts) {
-            const ability = cast.ability.name;
-            abilityDebugCounts[ability] = (abilityDebugCounts[ability] || 0) + 1;
-        }
-        console.log("Ability counts before whitelist:", abilityDebugCounts);
-        //console.log(this.casts);
-        //this removes any ability in blacklist from the cast list, also removes any windfury proccs
-        let melee_list = ["Melee", "Raptor Strike"];
-        if (localStorage.getItem("instants") == "true") {
-            var whitelist = ["Arcane Shot", "Auto Shot", "Steady Shot", "Scorpid Sting", "Serpent Sting", "Multi-Shot", "Raptor Strike", "Melee"];
-        } else {
-            var whitelist = ["Auto Shot", "Steady Shot", "Multi-Shot", "Raptor Strike", "Melee"];
+            return null;
         }
 
-        console.log("the whitelist is: " + whitelist);
+        let melee_list = ["Melee", "Raptor Strike"];
+        let whitelist;
+        if (localStorage.getItem("instants") == "true") {
+            whitelist = ["Arcane Shot", "Auto Shot", "Steady Shot", "Scorpid Sting", "Serpent Sting", "Multi-Shot", "Raptor Strike", "Melee"];
+        } else {
+            whitelist = ["Auto Shot", "Steady Shot", "Multi-Shot", "Raptor Strike", "Melee"];
+        }
+
         for (let i = 0; i < mutable_casts.length; i++) {
             if (!(whitelist.includes(mutable_casts[i].ability.name))) {
-                //console.log("Remove this: " + mutable_casts[i].ability.name);
                 mutable_casts.splice(i, 1);
                 i--;
-            }
-            else if (mutable_casts[i].ability.name == "Melee" && i != 0) {
+            } else if (mutable_casts[i].ability.name == "Melee" && i != 0) {
                 if (melee_list.includes(mutable_casts[i - 1].ability.name)) {
                     mutable_casts.splice(i - 1, 1);
                     i--;
@@ -404,15 +393,18 @@ class Report {
             }
         }
 
+        if (mutable_casts.length === 0) {
+            return null;
+        }
+
         let timestamps_weave = [];
         let ability_weave_time = [];
         let weave_ability_time = [];
 
-        //calculates the difference in time between weaves and abilities
         for (let i = 0; i < mutable_casts.length; i++) {
             let cast = mutable_casts[i];
             if ((cast.ability.name == "Melee" || cast.ability.name == "Raptor Strike") && i >= 1 && i < mutable_casts.length - 1) {
-                timestamps_weave.push((cast.timestamp - start_time) / 1000);
+                timestamps_weave.push((cast.timestamp - startTime) / 1000);
                 ability_weave_time.push(cast.timestamp - mutable_casts[i - 1].timestamp);
                 weave_ability_time.push(mutable_casts[i + 1].timestamp - cast.timestamp);
             }
@@ -423,12 +415,9 @@ class Report {
             total_weave_time.push(ability_weave_time[i] + weave_ability_time[i]);
         }
 
-
-        //remove outliers
         let outliers = document.getElementById("outliers").value;
         for (let i = 0; i < ability_weave_time.length; i++) {
             if (total_weave_time[i] > outliers) {
-                console.log("Zeit: " + total_weave_time[i]);
                 ability_weave_time.splice(i, 1);
                 weave_ability_time.splice(i, 1);
                 total_weave_time.splice(i, 1);
@@ -437,21 +426,20 @@ class Report {
             }
         }
 
-        //draws the plots
         let y12 = localStorage.getItem("y12");
         let y3 = localStorage.getItem("y3");
 
-        //calc averages
         let average1 = (ability_weave_time.reduce((a, b) => a + b, 0) / ability_weave_time.length) || 0;
         let average2 = (weave_ability_time.reduce((a, b) => a + b, 0) / ability_weave_time.length) || 0;
         let average3 = (total_weave_time.reduce((a, b) => a + b, 0) / ability_weave_time.length) || 0;
+        let median1 = calculateMedian(ability_weave_time);
+        let median2 = calculateMedian(weave_ability_time);
+        let median3 = calculateMedian(total_weave_time);
 
-        //prepare data for d3
         let zip1 = d3.zip(timestamps_weave, ability_weave_time);
         let zip2 = d3.zip(timestamps_weave, weave_ability_time);
         let zip3 = d3.zip(timestamps_weave, total_weave_time);
 
-        //hide over limit y12
         for (let i = 0; i < zip1.length; i++) {
             if (zip1[i][1] > y12 || zip2[i][1] > y12 || zip3[i][1] > y3) {
                 zip1.splice(i, 1);
@@ -461,34 +449,239 @@ class Report {
             }
         }
 
-        show("plot");
-        d3.selectAll("svg > *").remove();
         const lastCast = mutable_casts[mutable_casts.length - 1];
         if (!lastCast || !Number.isFinite(lastCast.timestamp)) {
-            alert("Could not build graph range from cast events.");
-            return;
+            return null;
         }
-        let x_limit = (lastCast.timestamp - start_time) / 1000 + 10;
-        drawPlot(zip1, average1, x_limit, y12, "#svg1", "Ability to weave time on " + name);
-        drawPlot(zip2, average2, x_limit, y12, "#svg2", "Weave to ability time on " + name);
-        drawPlot(zip3, average3, x_limit, y3, "#svg3", "Total weave time on " + name);
+        let x_limit = (lastCast.timestamp - startTime) / 1000 + 10;
 
-
+        return {
+            zip1: zip1,
+            zip2: zip2,
+            zip3: zip3,
+            totalWeaveValues: total_weave_time.slice(),
+            average1: average1,
+            average2: average2,
+            average3: average3,
+            median1: median1,
+            median2: median2,
+            median3: median3,
+            x_limit: x_limit,
+            y12: y12,
+            y3: y3
+        };
     }
 
+    async buildAllPullsSummary() {
+        const trashEnabled = document.getElementById("trash_enabled").checked;
+        const eligibleFights = this.data.fights.filter(fight => trashEnabled || fight.boss != 0);
+        const hunters = this.getHunters();
+        const encounterMap = {};
 
+        for (const fight of eligibleFights) {
+            const encounterId = Number(fight.boss || 0);
+            const key = String(encounterId);
+            if (!encounterMap[key]) {
+                encounterMap[key] = {
+                    encounterId: encounterId,
+                    encounterName: encounterId === 0 ? "Trash / Non-boss pulls" : fight.name,
+                    fights: []
+                };
+            }
+            encounterMap[key].fights.push(fight);
+        }
 
+        const encounterGroups = Object.values(encounterMap).sort((a, b) => a.encounterId - b.encounterId);
+        for (const group of encounterGroups) {
+            const rows = [];
+            for (const hunter of hunters) {
+                let pullCountIncluded = 0;
+                let allTotalWeaveValues = [];
+                for (const fight of group.fights) {
+                    const casts = await this.getFightHunterCasts(fight, hunter);
+                    const cachedMetrics = this.getCachedFightHunterMetrics(fight, hunter);
+                    const metrics = cachedMetrics || this.buildMetricsFromEvents(casts.events || [], fight.start_time);
+                    if (!cachedMetrics) {
+                        this.setCachedFightHunterMetrics(fight, hunter, metrics);
+                    }
+                    if (!metrics || !metrics.totalWeaveValues || metrics.totalWeaveValues.length === 0) {
+                        continue;
+                    }
+                    pullCountIncluded += 1;
+                    allTotalWeaveValues = allTotalWeaveValues.concat(metrics.totalWeaveValues);
+                }
+
+                if (allTotalWeaveValues.length === 0) {
+                    rows.push({
+                        hunterName: hunter.name,
+                        hunterId: hunter.id,
+                        pulls: pullCountIncluded,
+                        weaves: 0,
+                        average: 0,
+                        median: 0
+                    });
+                    continue;
+                }
+
+                const average = allTotalWeaveValues.reduce((a, b) => a + b, 0) / allTotalWeaveValues.length;
+                const median = calculateMedian(allTotalWeaveValues);
+                rows.push({
+                    hunterName: hunter.name,
+                    hunterId: hunter.id,
+                    pulls: pullCountIncluded,
+                    weaves: allTotalWeaveValues.length,
+                    average: average,
+                    median: median
+                });
+            }
+            rows.sort((a, b) => a.hunterName.localeCompare(b.hunterName));
+            group.rows = rows;
+        }
+
+        return encounterGroups;
+    }
+
+    async analyzeFight(fightId) {
+        const hunterPlots = document.getElementById("hunterPlots");
+        hunterPlots.innerHTML = "";
+        show("plot");
+
+        const fight = this.data.fights.find(candidate => String(candidate.id) === String(fightId));
+        if (!fight) {
+            hunterPlots.textContent = "Selected fight could not be found.";
+            return;
+        }
+
+        const hunters = this.getHunters();
+        if (hunters.length === 0) {
+            hunterPlots.textContent = "No hunters were found in this report.";
+            renderReportSummary([]);
+            return;
+        }
+
+        enableInput(false);
+        try {
+            for (const hunter of hunters) {
+                const panel = createHunterPanel(hunterPlots, hunter.name + " (" + hunter.id + ")");
+                let metrics = this.getCachedFightHunterMetrics(fight, hunter);
+                if (metrics === null) {
+                    const casts = await this.getFightHunterCasts(fight, hunter);
+                    metrics = this.buildMetricsFromEvents(casts.events || [], fight.start_time);
+                    this.setCachedFightHunterMetrics(fight, hunter, metrics);
+                }
+                if (!metrics) {
+                    panel.headerName.textContent = hunter.name + " (" + hunter.id + ")";
+                    panel.headerStats.textContent = "no usable cast data";
+                    panel.content.textContent = "No usable cast events for this hunter in this fight.";
+                    continue;
+                }
+                panel.headerName.textContent = hunter.name + " (" + hunter.id + ")";
+                panel.headerStats.textContent =
+                    "weaves: " + metrics.zip3.length +
+                    " | avg: " + metrics.average3.toFixed(1) + " ms" +
+                    " | median: " + metrics.median3.toFixed(1) + " ms";
+                drawPlot(metrics.zip1, metrics.average1, metrics.median1, metrics.x_limit, metrics.y12, panel.svg1, "Ability to weave time on " + fight.name);
+                drawPlot(metrics.zip2, metrics.average2, metrics.median2, metrics.x_limit, metrics.y12, panel.svg2, "Weave to ability time on " + fight.name);
+                drawPlot(metrics.zip3, metrics.average3, metrics.median3, metrics.x_limit, metrics.y3, panel.svg3, "Total weave time on " + fight.name);
+            }
+        } finally {
+            enableInput(true);
+        }
+    }
+}
+
+function createHunterPanel(parent, title) {
+    const panel = document.createElement("div");
+    panel.className = "hunter-panel";
+
+    const headerButton = document.createElement("button");
+    headerButton.type = "button";
+    const headerName = document.createElement("span");
+    headerName.className = "hunter-panel-button-name";
+    headerName.textContent = title;
+    const headerStats = document.createElement("span");
+    headerStats.className = "hunter-panel-button-stats";
+    headerStats.textContent = "";
+    headerButton.appendChild(headerName);
+    headerButton.appendChild(headerStats);
+    panel.appendChild(headerButton);
+
+    const content = document.createElement("div");
+    content.className = "hunter-panel-content";
+    panel.appendChild(content);
+
+    const svg1 = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg1.setAttribute("width", "600");
+    svg1.setAttribute("height", "400");
+    const svg2 = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg2.setAttribute("width", "600");
+    svg2.setAttribute("height", "400");
+    const svg3 = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg3.setAttribute("width", "600");
+    svg3.setAttribute("height", "400");
+    content.appendChild(svg1);
+    content.appendChild(svg2);
+    content.appendChild(svg3);
+
+    headerButton.addEventListener("click", function () {
+        content.style.display = content.style.display === "block" ? "none" : "block";
+    });
+
+    parent.appendChild(panel);
+    return { panel: panel, headerButton: headerButton, headerName: headerName, headerStats: headerStats, content: content, svg1: svg1, svg2: svg2, svg3: svg3 };
+}
+
+function renderReportSummary(encounterGroups) {
+    const summaryRoot = document.getElementById("reportSummary");
+    const summaryContent = document.getElementById("reportSummaryContent");
+    if (!summaryRoot || !summaryContent) {
+        return;
+    }
+
+    if (!encounterGroups || encounterGroups.length === 0) {
+        summaryRoot.style.display = "block";
+        summaryContent.innerHTML = '<details><summary>All Pulls Hunter Summary (by Encounter)</summary><div style="padding:8px;">No hunter summary data available.</div></details>';
+        return;
+    }
+
+    let html = '<details><summary>All Pulls Hunter Summary (by Encounter)</summary><div style="padding:6px 8px 8px 8px;">';
+    for (const encounterGroup of encounterGroups) {
+        html += '<div class="summary-encounter">';
+        html += '<details><summary>Encounter ' + encounterGroup.encounterId + ': ' + encounterGroup.encounterName + '</summary>';
+        html += '<div style="padding:6px;"><table><thead><tr>' +
+            '<th>Hunter</th>' +
+            '<th>Pulls</th>' +
+            '<th>Weaves</th>' +
+            '<th>Avg Total Weave (ms)</th>' +
+            '<th>Median Total Weave (ms)</th>' +
+            '</tr></thead><tbody>';
+
+        for (const row of encounterGroup.rows) {
+            html += '<tr>' +
+                '<td>' + row.hunterName + ' (' + row.hunterId + ')</td>' +
+                '<td>' + row.pulls + '</td>' +
+                '<td>' + row.weaves + '</td>' +
+                '<td>' + row.average.toFixed(1) + '</td>' +
+                '<td>' + row.median.toFixed(1) + '</td>' +
+                '</tr>';
+        }
+        html += '</tbody></table></div></details></div>';
+    }
+    html += '</div></details>';
+    summaryContent.innerHTML = html;
+    summaryRoot.style.display = "block";
 }
 
 //draws the graphs
-function drawPlot(zip, average, x_limit, y_limit, svg_id, title) {
+function drawPlot(zip, average, median, x_limit, y_limit, svgTarget, title) {
 
     //calculate average
 
     average = average.toFixed(1);
+    median = median.toFixed(1);
     //console.log(average);
 
-    var svg = d3.select(svg_id),
+    var svg = d3.select(svgTarget),
         margin = 100,
         width = svg.attr("width") - margin - 20, //400
         height = svg.attr("height") - margin //300
@@ -523,11 +716,11 @@ function drawPlot(zip, average, x_limit, y_limit, svg_id, title) {
 
     //average label 
     svg.append('text')
-        .attr('text-anchor', 'middle')
-        .attr('transform', 'translate(' + (svg.attr("width") - 55) + ', ' + (svg.attr("height") - 6) + ')')
+        .attr('text-anchor', 'end')
+        .attr('transform', 'translate(' + (svg.attr("width") - 10) + ', ' + (svg.attr("height") - 6) + ')')
         .style('font-family', 'Helvetica')
         .style('font-size', 12)
-        .text("avg. time = " + average);
+        .text("avg. = " + average + " | median = " + median);
 
     var g = svg.append("g")
         .attr("transform", "translate(" + 70 + "," + 50 + ")");
@@ -554,26 +747,19 @@ function drawPlot(zip, average, x_limit, y_limit, svg_id, title) {
 }
 
 function selectReport() {
-
-    let wcl = getParameterByName('id');
-    let player = getParameterByName('player');
     let el = document.querySelector("#code");
-    let el_playerSelect = document.querySelector("#pname");
     let el_fightSelect = document.querySelector("#fightSelect");
-
-    let playerParam = el_playerSelect === null ? "" : "&player=" + el_playerSelect.value.charAt(0).toUpperCase() + el_playerSelect.value.slice(1);;
-    //TODO: making URL instant load copied fight
-    //let fightParam = el_fightSelect === null ? "" : "&fight=" + el_fightSelect.value;
+    let fightSelectorBlock = document.querySelector("#fightSelectorBlock");
+    const hunterPlots = document.getElementById("hunterPlots");
 
     el_fightSelect.innerHTML = "";
-    let reportId = el.value;
-
-    if (!wcl || wcl !== reportId || !player || player !== el_playerSelect.value) {
-        //TODO: look above
-        //location.href = location.origin + location.pathname + '?id=' + el.value + playerParam + fightParam;
-        location.href = location.origin + location.pathname + '?id=' + el.value + playerParam;
-        return;
+    if (fightSelectorBlock) {
+        fightSelectorBlock.style.display = "none";
     }
+    if (hunterPlots) {
+        hunterPlots.innerHTML = "";
+    }
+    let reportId = el.value.trim();
 
     let urlmatch = reportId.match(/https:\/\/(?:[a-z]+\.)?(?:classic\.|www\.)?warcraftlogs\.com\/reports\/((?:a:)?\w+)/);
     if (urlmatch) reportId = urlmatch[1];
@@ -585,21 +771,34 @@ function selectReport() {
     }
     //resets color
     el.style.borderColor = null;
+    const url = new URL(location.href);
+    url.searchParams.set("id", reportId);
+    history.replaceState({}, document.title, url.pathname + "?" + url.searchParams.toString() + url.hash);
     console.log("checking after");
     let trashEnabled = document.getElementById("trash_enabled").checked;
-    if (!(reportId in reports) || (!reports[reportId].withTrash && trashEnabled)) 
-        reports[reportId] = new Report(reportId, getParameterByName('player'), trashEnabled);
+    if (!(reportId in reports) || (!reports[reportId].withTrash && trashEnabled))
+        reports[reportId] = new Report(reportId, trashEnabled);
+    enableInput(false);
     reports[reportId].fetchData().then(() => {
         console.log("Starting to add the fights....");
         for (let fight of reports[reportId].data.fights) {
             if (trashEnabled || fight.boss != 0) {
                 let el_f = document.createElement("option");
                 el_f.value = reportId + ";" + fight.id + ";" + fight.start_time + ";" + fight.name;
-                el_f.textContent = fight.name + " - " + fight.id;
+                const durationLabel = formatDurationMs(fight.end_time - fight.start_time);
+                el_f.textContent = fight.name + " - " + fight.id + " (" + durationLabel + ")";
                 el_fightSelect.appendChild(el_f);
             }
         }
-    }).catch(printError);
+        if (fightSelectorBlock && el_fightSelect.options.length > 0) {
+            fightSelectorBlock.style.display = "block";
+        }
+        return reports[reportId].buildAllPullsSummary();
+    }).then((summaryRows) => {
+        renderReportSummary(summaryRows);
+    }).catch(printError).finally(() => {
+        enableInput(true);
+    });
 
 }
 
@@ -610,9 +809,13 @@ function enableInput(enable = true) {
             el.disabled = !enable;
         }
     }
+    const spinner = document.getElementById("loadingSpinner");
+    if (spinner) {
+        spinner.style.display = enable ? "none" : "inline-block";
+    }
 }
 
-function selectFight(index) {
+async function selectFight(index) {
     console.log("selecting Fight....");
     let el = document.querySelector("#fightSelect");
     let i;
@@ -622,6 +825,6 @@ function selectFight(index) {
         i = el.selectedIndex;
     if (i === -1) return;
     let information = el.options[i].value;
-    let [reportId, fightId, start_time, name] = information.split(";");
-    reports[reportId].doMath(fightId, start_time, name);
+    let [reportId, fightId] = information.split(";");
+    await reports[reportId].analyzeFight(fightId);
 }
