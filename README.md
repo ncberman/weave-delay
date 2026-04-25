@@ -11,7 +11,7 @@ Steps:
 
 1. In Railway, connect this GitHub repository to your service/project.
 2. Set the service's watched branch to `main`.
-3. Ensure Python 3 and `make` are available in the build/runtime environment (this repo's `railpack.json` config ensures both for Railway).
+3. Ensure Python 3 and `make` are available in the build/runtime environment (this repo's `railpack.json` deploy apt packages ensure both for Railway).
 4. Push/merge to `main` and Railway will deploy using the config file in this repo.
 
 The config currently deploys with:
