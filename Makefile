@@ -1,10 +1,11 @@
-.PHONY: help run run-open
+.PHONY: help test run run-open
 
 HOST ?= 127.0.0.1
 PORT ?= 5500
 
 help:
 	@echo "Targets:"
+	@echo "  make test      - Run smoke tests"
 	@echo "  make run       - Start local web server"
 	@echo "  make run-open  - Open browser and start local web server"
 	@echo ""
@@ -14,6 +15,9 @@ help:
 
 run:
 	python -m http.server $(PORT) --bind $(HOST)
+
+test:
+	python scripts/smoke_test.py
 
 run-open:
 	python -m webbrowser "http://$(HOST):$(PORT)/index.html"
