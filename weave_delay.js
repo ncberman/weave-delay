@@ -3,6 +3,7 @@
 const throttleTime = 150;
 const reports = {};
 const wclUserGraphqlUrl = "https://www.warcraftlogs.com/api/v2/user";
+let summaryGenerationToken = 0;
 
 let nextRequestTime = 0;
 
@@ -35,6 +36,17 @@ function calculateMedian(values) {
         return (sorted[mid - 1] + sorted[mid]) / 2;
     }
     return sorted[mid];
+}
+
+function getMetricsConfigSignature() {
+    const instants = localStorage.getItem("instants") === "true" ? "1" : "0";
+    const outliersInput = document.getElementById("outliers");
+    const y12Input = document.getElementById("y12");
+    const y3Input = document.getElementById("y3");
+    const outliers = outliersInput ? String(Number(outliersInput.value) || 0) : "0";
+    const y12 = y12Input ? String(Number(y12Input.value) || 0) : "0";
+    const y3 = y3Input ? String(Number(y3Input.value) || 0) : "0";
+    return [instants, outliers, y12, y3].join("|");
 }
 
 function formatDurationMs(durationMs) {
@@ -277,6 +289,7 @@ class Report {
         this.fightHunterCasts = {};
         this.fightHunterMetrics = {};
         this.fightAllCasts = {};
+        this.summaryCache = {};
     }
 
     async fetchData() {
@@ -345,22 +358,28 @@ class Report {
         return result;
     }
 
-    getCachedFightHunterMetrics(fight, hunter) {
+    getCachedFightHunterMetrics(fight, hunter, signature) {
         const fightKey = String(fight.id);
         const hunterKey = String(hunter.id);
         if (!this.fightHunterMetrics[fightKey]) {
             return null;
         }
-        return this.fightHunterMetrics[fightKey][hunterKey] ?? null;
+        if (!this.fightHunterMetrics[fightKey][hunterKey]) {
+            return null;
+        }
+        return this.fightHunterMetrics[fightKey][hunterKey][signature] ?? null;
     }
 
-    setCachedFightHunterMetrics(fight, hunter, metrics) {
+    setCachedFightHunterMetrics(fight, hunter, signature, metrics) {
         const fightKey = String(fight.id);
         const hunterKey = String(hunter.id);
         if (!this.fightHunterMetrics[fightKey]) {
             this.fightHunterMetrics[fightKey] = {};
         }
-        this.fightHunterMetrics[fightKey][hunterKey] = metrics;
+        if (!this.fightHunterMetrics[fightKey][hunterKey]) {
+            this.fightHunterMetrics[fightKey][hunterKey] = {};
+        }
+        this.fightHunterMetrics[fightKey][hunterKey][signature] = metrics;
     }
 
     buildMetricsFromEvents(events, startTime) {
@@ -373,25 +392,32 @@ class Report {
             return null;
         }
 
-        let melee_list = ["Melee", "Raptor Strike"];
-        let whitelist;
-        if (localStorage.getItem("instants") == "true") {
-            whitelist = ["Arcane Shot", "Auto Shot", "Steady Shot", "Scorpid Sting", "Serpent Sting", "Multi-Shot", "Raptor Strike", "Melee"];
-        } else {
-            whitelist = ["Auto Shot", "Steady Shot", "Multi-Shot", "Raptor Strike", "Melee"];
-        }
+        const instantsEnabled = localStorage.getItem("instants") === "true";
+        const outliersInput = document.getElementById("outliers");
+        const y12Input = document.getElementById("y12");
+        const y3Input = document.getElementById("y3");
+        const outlierThreshold = Number(outliersInput ? outliersInput.value : 0) || 0;
+        const y12 = Number(y12Input ? y12Input.value : 2500) || 2500;
+        const y3 = Number(y3Input ? y3Input.value : 4000) || 4000;
 
-        for (let i = 0; i < mutable_casts.length; i++) {
-            if (!(whitelist.includes(mutable_casts[i].ability.name))) {
-                mutable_casts.splice(i, 1);
-                i--;
-            } else if (mutable_casts[i].ability.name == "Melee" && i != 0) {
-                if (melee_list.includes(mutable_casts[i - 1].ability.name)) {
-                    mutable_casts.splice(i - 1, 1);
-                    i--;
+        const meleeSet = new Set(["Melee", "Raptor Strike"]);
+        const whitelistSet = instantsEnabled
+            ? new Set(["Arcane Shot", "Auto Shot", "Steady Shot", "Scorpid Sting", "Serpent Sting", "Multi-Shot", "Raptor Strike", "Melee"])
+            : new Set(["Auto Shot", "Steady Shot", "Multi-Shot", "Raptor Strike", "Melee"]);
+        const filteredCasts = [];
+        for (const cast of mutable_casts) {
+            if (!whitelistSet.has(cast.ability.name)) {
+                continue;
+            }
+            if (cast.ability.name === "Melee" && filteredCasts.length > 0) {
+                const previousAbilityName = filteredCasts[filteredCasts.length - 1].ability.name;
+                if (meleeSet.has(previousAbilityName)) {
+                    filteredCasts.pop();
                 }
             }
+            filteredCasts.push(cast);
         }
+        mutable_casts = filteredCasts;
 
         if (mutable_casts.length === 0) {
             return null;
@@ -411,23 +437,22 @@ class Report {
         }
 
         let total_weave_time = [];
+        const filteredTimestamps = [];
+        const filteredAbilityToWeave = [];
+        const filteredWeaveToAbility = [];
         for (let i = 0; i < ability_weave_time.length; i++) {
-            total_weave_time.push(ability_weave_time[i] + weave_ability_time[i]);
-        }
-
-        let outliers = document.getElementById("outliers").value;
-        for (let i = 0; i < ability_weave_time.length; i++) {
-            if (total_weave_time[i] > outliers) {
-                ability_weave_time.splice(i, 1);
-                weave_ability_time.splice(i, 1);
-                total_weave_time.splice(i, 1);
-                timestamps_weave.splice(i, 1);
-                i--;
+            const total = ability_weave_time[i] + weave_ability_time[i];
+            if (outlierThreshold > 0 && total > outlierThreshold) {
+                continue;
             }
+            filteredTimestamps.push(timestamps_weave[i]);
+            filteredAbilityToWeave.push(ability_weave_time[i]);
+            filteredWeaveToAbility.push(weave_ability_time[i]);
+            total_weave_time.push(total);
         }
-
-        let y12 = localStorage.getItem("y12");
-        let y3 = localStorage.getItem("y3");
+        timestamps_weave = filteredTimestamps;
+        ability_weave_time = filteredAbilityToWeave;
+        weave_ability_time = filteredWeaveToAbility;
 
         let average1 = (ability_weave_time.reduce((a, b) => a + b, 0) / ability_weave_time.length) || 0;
         let average2 = (weave_ability_time.reduce((a, b) => a + b, 0) / ability_weave_time.length) || 0;
@@ -436,17 +461,19 @@ class Report {
         let median2 = calculateMedian(weave_ability_time);
         let median3 = calculateMedian(total_weave_time);
 
-        let zip1 = d3.zip(timestamps_weave, ability_weave_time);
-        let zip2 = d3.zip(timestamps_weave, weave_ability_time);
-        let zip3 = d3.zip(timestamps_weave, total_weave_time);
-
-        for (let i = 0; i < zip1.length; i++) {
-            if (zip1[i][1] > y12 || zip2[i][1] > y12 || zip3[i][1] > y3) {
-                zip1.splice(i, 1);
-                zip2.splice(i, 1);
-                zip3.splice(i, 1);
-                i--;
+        const zip1 = [];
+        const zip2 = [];
+        const zip3 = [];
+        for (let i = 0; i < timestamps_weave.length; i++) {
+            const val1 = ability_weave_time[i];
+            const val2 = weave_ability_time[i];
+            const val3 = total_weave_time[i];
+            if (val1 > y12 || val2 > y12 || val3 > y3) {
+                continue;
             }
+            zip1.push([timestamps_weave[i], val1]);
+            zip2.push([timestamps_weave[i], val2]);
+            zip3.push([timestamps_weave[i], val3]);
         }
 
         const lastCast = mutable_casts[mutable_casts.length - 1];
@@ -474,6 +501,11 @@ class Report {
 
     async buildAllPullsSummary() {
         const trashEnabled = document.getElementById("trash_enabled").checked;
+        const metricsSignature = getMetricsConfigSignature();
+        const summaryCacheKey = String(trashEnabled) + "|" + metricsSignature;
+        if (this.summaryCache[summaryCacheKey]) {
+            return this.summaryCache[summaryCacheKey];
+        }
         const eligibleFights = this.data.fights.filter(fight => trashEnabled || fight.boss != 0);
         const hunters = this.getHunters();
         const encounterMap = {};
@@ -499,10 +531,10 @@ class Report {
                 let allTotalWeaveValues = [];
                 for (const fight of group.fights) {
                     const casts = await this.getFightHunterCasts(fight, hunter);
-                    const cachedMetrics = this.getCachedFightHunterMetrics(fight, hunter);
+                    const cachedMetrics = this.getCachedFightHunterMetrics(fight, hunter, metricsSignature);
                     const metrics = cachedMetrics || this.buildMetricsFromEvents(casts.events || [], fight.start_time);
                     if (!cachedMetrics) {
-                        this.setCachedFightHunterMetrics(fight, hunter, metrics);
+                        this.setCachedFightHunterMetrics(fight, hunter, metricsSignature, metrics);
                     }
                     if (!metrics || !metrics.totalWeaveValues || metrics.totalWeaveValues.length === 0) {
                         continue;
@@ -538,6 +570,7 @@ class Report {
             group.rows = rows;
         }
 
+        this.summaryCache[summaryCacheKey] = encounterGroups;
         return encounterGroups;
     }
 
@@ -561,13 +594,14 @@ class Report {
 
         enableInput(false);
         try {
+            const metricsSignature = getMetricsConfigSignature();
             for (const hunter of hunters) {
                 const panel = createHunterPanel(hunterPlots, hunter.name + " (" + hunter.id + ")");
-                let metrics = this.getCachedFightHunterMetrics(fight, hunter);
+                let metrics = this.getCachedFightHunterMetrics(fight, hunter, metricsSignature);
                 if (metrics === null) {
                     const casts = await this.getFightHunterCasts(fight, hunter);
                     metrics = this.buildMetricsFromEvents(casts.events || [], fight.start_time);
-                    this.setCachedFightHunterMetrics(fight, hunter, metrics);
+                    this.setCachedFightHunterMetrics(fight, hunter, metricsSignature, metrics);
                 }
                 if (!metrics) {
                     panel.headerName.textContent = hunter.name + " (" + hunter.id + ")";
@@ -638,37 +672,84 @@ function renderReportSummary(encounterGroups) {
         return;
     }
 
+    summaryContent.replaceChildren();
+
+    const outerDetails = document.createElement("details");
+    const outerSummary = document.createElement("summary");
+    outerSummary.textContent = "All Pulls Hunter Summary (by Encounter)";
+    outerDetails.appendChild(outerSummary);
+
+    const outerBody = document.createElement("div");
+    outerBody.style.padding = "6px 8px 8px 8px";
+    outerDetails.appendChild(outerBody);
+
     if (!encounterGroups || encounterGroups.length === 0) {
+        const emptyText = document.createElement("div");
+        emptyText.style.padding = "8px";
+        emptyText.textContent = "No hunter summary data available.";
+        outerBody.appendChild(emptyText);
+        summaryContent.appendChild(outerDetails);
         summaryRoot.style.display = "block";
-        summaryContent.innerHTML = '<details><summary>All Pulls Hunter Summary (by Encounter)</summary><div style="padding:8px;">No hunter summary data available.</div></details>';
         return;
     }
 
-    let html = '<details><summary>All Pulls Hunter Summary (by Encounter)</summary><div style="padding:6px 8px 8px 8px;">';
     for (const encounterGroup of encounterGroups) {
-        html += '<div class="summary-encounter">';
-        html += '<details><summary>Encounter ' + encounterGroup.encounterId + ': ' + encounterGroup.encounterName + '</summary>';
-        html += '<div style="padding:6px;"><table><thead><tr>' +
-            '<th>Hunter</th>' +
-            '<th>Pulls</th>' +
-            '<th>Weaves</th>' +
-            '<th>Avg Total Weave (ms)</th>' +
-            '<th>Median Total Weave (ms)</th>' +
-            '</tr></thead><tbody>';
+        const encounterContainer = document.createElement("div");
+        encounterContainer.className = "summary-encounter";
 
+        const encounterDetails = document.createElement("details");
+        const encounterSummary = document.createElement("summary");
+        encounterSummary.textContent = "Encounter " + encounterGroup.encounterId + ": " + encounterGroup.encounterName;
+        encounterDetails.appendChild(encounterSummary);
+
+        const encounterBody = document.createElement("div");
+        encounterBody.style.padding = "6px";
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        const headerRow = document.createElement("tr");
+        ["Hunter", "Pulls", "Weaves", "Avg Total Weave (ms)", "Median Total Weave (ms)"].forEach((headerText) => {
+            const th = document.createElement("th");
+            th.textContent = headerText;
+            headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        const tbody = document.createElement("tbody");
         for (const row of encounterGroup.rows) {
-            html += '<tr>' +
-                '<td>' + row.hunterName + ' (' + row.hunterId + ')</td>' +
-                '<td>' + row.pulls + '</td>' +
-                '<td>' + row.weaves + '</td>' +
-                '<td>' + row.average.toFixed(1) + '</td>' +
-                '<td>' + row.median.toFixed(1) + '</td>' +
-                '</tr>';
+            const tr = document.createElement("tr");
+            const values = [
+                row.hunterName + " (" + row.hunterId + ")",
+                String(row.pulls),
+                String(row.weaves),
+                row.average.toFixed(1),
+                row.median.toFixed(1)
+            ];
+            for (const value of values) {
+                const td = document.createElement("td");
+                td.textContent = value;
+                tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
         }
-        html += '</tbody></table></div></details></div>';
+        table.appendChild(tbody);
+        encounterBody.appendChild(table);
+        encounterDetails.appendChild(encounterBody);
+        encounterContainer.appendChild(encounterDetails);
+        outerBody.appendChild(encounterContainer);
     }
-    html += '</div></details>';
-    summaryContent.innerHTML = html;
+
+    summaryContent.appendChild(outerDetails);
+    summaryRoot.style.display = "block";
+}
+
+function renderReportSummaryLoading() {
+    const summaryRoot = document.getElementById("reportSummary");
+    const summaryContent = document.getElementById("reportSummaryContent");
+    if (!summaryRoot || !summaryContent) {
+        return;
+    }
+    summaryContent.textContent = "Loading all-pulls summary...";
     summaryRoot.style.display = "block";
 }
 
@@ -746,7 +827,7 @@ function drawPlot(zip, average, median, x_limit, y_limit, svgTarget, title) {
         .style("fill", "#0000FF");
 }
 
-function selectReport() {
+async function selectReport() {
     let el = document.querySelector("#code");
     let el_fightSelect = document.querySelector("#fightSelect");
     let fightSelectorBlock = document.querySelector("#fightSelectorBlock");
@@ -771,6 +852,7 @@ function selectReport() {
     }
     //resets color
     el.style.borderColor = null;
+    const currentRequestToken = ++summaryGenerationToken;
     const url = new URL(location.href);
     url.searchParams.set("id", reportId);
     history.replaceState({}, document.title, url.pathname + "?" + url.searchParams.toString() + url.hash);
@@ -779,7 +861,8 @@ function selectReport() {
     if (!(reportId in reports) || (!reports[reportId].withTrash && trashEnabled))
         reports[reportId] = new Report(reportId, trashEnabled);
     enableInput(false);
-    reports[reportId].fetchData().then(() => {
+    try {
+        await reports[reportId].fetchData();
         console.log("Starting to add the fights....");
         for (let fight of reports[reportId].data.fights) {
             if (trashEnabled || fight.boss != 0) {
@@ -793,12 +876,22 @@ function selectReport() {
         if (fightSelectorBlock && el_fightSelect.options.length > 0) {
             fightSelectorBlock.style.display = "block";
         }
-        return reports[reportId].buildAllPullsSummary();
-    }).then((summaryRows) => {
-        renderReportSummary(summaryRows);
-    }).catch(printError).finally(() => {
+        renderReportSummaryLoading();
         enableInput(true);
-    });
+        const summaryRows = await reports[reportId].buildAllPullsSummary();
+        if (currentRequestToken !== summaryGenerationToken) {
+            return;
+        }
+        renderReportSummary(summaryRows);
+    } catch (e) {
+        if (currentRequestToken === summaryGenerationToken) {
+            printError(e);
+        }
+    } finally {
+        if (currentRequestToken === summaryGenerationToken) {
+            enableInput(true);
+        }
+    }
 
 }
 
