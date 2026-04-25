@@ -16,7 +16,7 @@ Steps:
 
 The config currently deploys with:
 
-- `startCommand`: `make run HOST=0.0.0.0 PORT=$PORT PYTHON=python3`
+- `startCommand`: `make run HOST=0.0.0.0 PORT=$PORT`
 - `healthcheckPath`: `/`
 
 Railway config-as-code reference: [https://docs.railway.com/config-as-code](https://docs.railway.com/config-as-code)

@@ -1,6 +1,6 @@
 .PHONY: help run run-open
 
-PYTHON ?= python3
+PYTHON ?= $(shell command -v python3 >/dev/null 2>&1 && echo python3 || echo python)
 HOST ?= 127.0.0.1
 PORT ?= 5500
 
