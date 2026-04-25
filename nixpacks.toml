@@ -2,3 +2,4 @@ providers = ["python"]
 
 [phases.setup]
 nixPkgs = ["...", "gnumake"]
+aptPkgs = ["make"]
