@@ -13,8 +13,12 @@
         gtag('config', 'G-YNZ372ED1D');
     </script>
     <meta charset="UTF-8">
-    <script src="weave_delay.js"></script>
-    <script src="front.js"></script>
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://d3js.org; style-src 'self' 'unsafe-inline'; connect-src 'self' https://www.warcraftlogs.com https://www.google-analytics.com https://*.google-analytics.com https://*.googletagmanager.com https://*.doubleclick.net; img-src 'self' data: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <script src="oauth.js"></script>
+    <script src="weave_delay.js?v=20260424f"></script>
+    <script src="front.js?v=20260424b"></script>
     <script src="settings.js"></script>
     <script src="https://d3js.org/d3.v4.js"></script>
     <title>weave-delay</title>
@@ -27,6 +31,155 @@
 
         #plot * {
             background-color: #fff;
+        }
+
+        .hunter-panel {
+            margin-bottom: 10px;
+            border: 1px solid #aaa;
+            background-color: #fff;
+            color: #000;
+            max-width: 1860px;
+        }
+
+        .hunter-panel:nth-child(odd) {
+            background-color: #f7f7f7;
+        }
+
+        .hunter-panel:nth-child(even) {
+            background-color: #ececec;
+        }
+
+        .hunter-panel button {
+            width: 100%;
+            border: 0;
+            padding: 8px 10px;
+            cursor: pointer;
+            background: #dcdcdc;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            text-align: left;
+        }
+
+        .hunter-panel-button-name {
+            font-weight: 600;
+        }
+
+        .hunter-panel-button-stats {
+            margin-left: auto;
+            text-align: right;
+            white-space: nowrap;
+            font-size: 12px;
+        }
+
+        .hunter-panel-content {
+            display: none;
+            padding: 8px;
+        }
+
+        .hunter-panel-content svg {
+            margin-right: 8px;
+            margin-bottom: 8px;
+        }
+
+        #reportSummary {
+            border: 1px solid #999;
+            margin-top: 10px;
+            padding: 8px;
+            max-width: 960px;
+            background: #1c1c1c;
+            color: #fff;
+        }
+
+        #reportSummary details {
+            border: 1px solid #555;
+            margin-top: 8px;
+            background: #222;
+        }
+
+        #reportSummary summary {
+            cursor: pointer;
+            padding: 6px 8px;
+            font-weight: 600;
+            background: #2c2c2c;
+            user-select: none;
+        }
+
+        #reportSummary table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 0;
+        }
+
+        #reportSummary th,
+        #reportSummary td {
+            border: 1px solid #666;
+            padding: 4px 6px;
+            font-size: 12px;
+        }
+
+        #reportSummary th {
+            background: #333;
+        }
+
+        .summary-encounter {
+            margin-top: 8px;
+        }
+
+        .summary-encounter details {
+            border: 1px solid #666;
+            background: #1e1e1e;
+        }
+
+        .summary-encounter summary {
+            font-size: 13px;
+            color: #ddd;
+            background: #303030;
+        }
+
+        .submit-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .loading-spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid #666;
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: none;
+        }
+
+        @keyframes spin {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        #fightSelectorBlock {
+            margin-top: 10px;
+            max-width: 960px;
+            display: none;
+        }
+
+        #fightSelectorBlock label {
+            display: inline-block;
+            width: 120px;
+        }
+
+        #fightSelectorBlock select {
+            min-width: 350px;
+            width: 100%;
+            max-width: 840px;
+            box-sizing: border-box;
         }
 
         body,
@@ -99,22 +252,22 @@
                 <td>Report ID</td>
                 <td><input type="text" id="code"></td>
             </tr>
-            <tr>
-                <td>Player Name</td>
-                <td><input type="text" id="pname"></input></td>
-            </tr>
-            <tr>
-                <td>Fight</td>
-                <td><select id="fightSelect" onchange="selectFight()"></select></td>
-            </tr>
         </table>
-        <button onclick="selectReport()">Submit</button>
+        <div class="submit-row">
+            <button onclick="selectReport()">Submit</button>
+            <span id="loadingSpinner" class="loading-spinner" title="Loading"></span>
+        </div>
+        <div id="reportSummary" style="display:none">
+            <div id="reportSummaryContent"></div>
+        </div>
+        <div id="fightSelectorBlock">
+            <label for="fightSelect">Fight</label>
+            <select id="fightSelect" onchange="selectFight()"></select>
+        </div>
     </div>
     <br>
     <div id="plot" style="display: none; position: relative; right: -15px; top: 15px;">
-        <svg id="svg1" width="600" height="400"></svg>
-        <svg id="svg2" width="600" height="400"></svg>
-        <svg id="svg3" width="600" height="400"></svg>
+        <div id="hunterPlots"></div>
     </div>
 
     <div id="info" style="position: relative; right: -15px; top: 15px;"">
@@ -135,6 +288,14 @@
                     <br>
                     <label for="trash_enabled">Add trash fights to the list</label>
                     <input type="checkbox" id="trash_enabled" checked="">
+                    <br>
+                    <label for="oauth_client_id">Warcraft Logs OAuth Client ID</label>
+                    <input type="text" id="oauth_client_id" placeholder="Enter your OAuth client id"></input>
+                    <br>
+                    <button type="button" onclick="connectWarcraftLogs()">Connect Warcraft Logs</button>
+                    <button type="button" onclick="disconnectWarcraftLogs()">Disconnect</button>
+                    <br>
+                    <span id="oauth_status">Warcraft Logs auth: disconnected</span>
                 </fieldset>
                 <br>
                 <fieldset>
@@ -178,19 +339,8 @@
                     weaved
                 </li>
             </ul>
-            <p>For any feedback or inconsistencies you notice (I am very new to JavaScript or HTML), do not
-                hesitate
-                to
-                send me a message on Discord (#henry3281). I am happy about any feedback. Just join the hunter
-                <a href="https://discord.gg/classichunter">discord</a>, so I do not get flooded with friend
-                requests.
-            </p>
-            <p>Some parts of the code and parts of the design are inspired/copied from this awesome tool made by
-                voomlz.
-                Here it is, go
-                check it out if you do not know it yet:
-                <a href="https://voomlz.github.io/threat/">Voomlz threat tool</a>.
-            </p>
+            <p>This project is a fork of <a href="https://github.com/aerthax/weave-delay">aerthax/weave-delay</a>,
+                with a focus on batch processing of hunter data.</p>
         </div>
         <div id="changelog" style="display:none">
             <h1>Any changes will go here in the future!</h1>
@@ -225,21 +375,19 @@
         <div id="tutorial" style="display:none">
             <p>How to get your weave graphs</p>
             <ol>
-                <li>Go to warcraft logs and copy your report. Can use directly the entire url (ex:
-                    https://classic.warcraftlogs.com/reports/TvCLWArKDBYbw6Hk#fight=last) or only the id (e.g:
-                    TvCLWArKDBYbw6Hk)
+                <li>Go to Warcraft Logs and copy your report URL. You can paste the full URL (example:
+                    https://fresh.warcraftlogs.com/reports/18yHr2ZVbxGXYkaR) or only the id (e.g:
+                    18yHr2ZVbxGXYkaR)
                 </li>
-                <li>Past your ID/report url in 'Report ID'</li>
-                <li>Enter the player Name'</li>
-                <li>Select the fight you wanna see</li>
+                <li>Paste your ID/report URL in <b>Report ID</b> and click <b>Submit</b>.</li>
+                <li>In <b>Settings</b>, enter your Warcraft Logs OAuth Client ID and click <b>Connect Warcraft Logs</b>
+                    if you are not already connected.</li>
+                <li>Select the fight you want to inspect from the fight dropdown.</li>
                 <li>Enjoy the graphs</li>
             </ol>
-            If something seem incorrect
+            If something seems incorrect:
             <ol>
-                <li>Try to force refresh the website (ctrl+f5 on chrome)</li>
-                <li>Please send me a DM on discord #henry3281. Just join the hunter<a
-                        href="https://discord.gg/classichunter">
-                        discord</a>, so I do not get flooded with friend requests. </li>
+                <li>Try a hard refresh (Ctrl+F5 in Chrome).</li>
             </ol>
         </div>
     </div>

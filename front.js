@@ -48,28 +48,25 @@ function showAndHideSettings() {
     hide("tutorial");
 }
 
-function loadPage() {
+async function loadPage() {
     scroll(0, 0);
     loadSettings();
+    try {
+        if (typeof initializeOAuthFromUrl === "function") {
+            await initializeOAuthFromUrl();
+        }
+    } catch (e) {
+        console.error(e);
+        alert("OAuth error:\n" + e.message + "\n\nReconnect Warcraft Logs in Settings.");
+    }
+    if (typeof refreshAuthStatusUI === "function") {
+        refreshAuthStatusUI();
+    }
     const idParam = getParameterByName('id');
-    //const fightParam = getParameterByName('fight');
-    const playerParam = getParameterByName('player');
 
     if (idParam) {
         document.getElementById("code").value = idParam;
     }
-
-    if (idParam && playerParam) {
-        console.log("Setting params...");
-        document.getElementById("pname").value = playerParam;
-        selectReport();
-    }
-
-    //if (fightParam) {
-    //    let selectedIndex = parseInt(fightParam);
-    //    sleep(5000);
-    //    selectFight(selectedIndex);
-    //}
 }
 
 
