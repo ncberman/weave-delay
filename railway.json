@@ -1,7 +1,7 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "python -m http.server $PORT --bind 0.0.0.0",
+    "startCommand": "make run HOST=0.0.0.0 PORT=$PORT PYTHON=python3",
     "healthcheckPath": "/",
     "healthcheckTimeout": 100
   }
