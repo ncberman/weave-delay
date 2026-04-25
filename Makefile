@@ -1,5 +1,6 @@
 .PHONY: help run run-open
 
+PYTHON ?= python3
 HOST ?= 127.0.0.1
 PORT ?= 5500
 
@@ -13,8 +14,8 @@ help:
 	@echo "  make run HOST=0.0.0.0 PORT=5500"
 
 run:
-	python -m http.server $(PORT) --bind $(HOST)
+	$(PYTHON) -m http.server $(PORT) --bind $(HOST)
 
 run-open:
-	python -m webbrowser "http://$(HOST):$(PORT)/index.html"
-	python -m http.server $(PORT) --bind $(HOST)
+	$(PYTHON) -m webbrowser "http://$(HOST):$(PORT)/index.html"
+	$(PYTHON) -m http.server $(PORT) --bind $(HOST)

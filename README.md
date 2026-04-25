@@ -11,12 +11,12 @@ Steps:
 
 1. In Railway, connect this GitHub repository to your service/project.
 2. Set the service's watched branch to `main`.
-3. Ensure Python is available in the build/runtime environment (Railway default Nixpacks usually handles this).
+3. Ensure Python 3 and `make` are available in the build/runtime environment (this repo's `nixpacks.toml` config ensures both).
 4. Push/merge to `main` and Railway will deploy using the config file in this repo.
 
 The config currently deploys with:
 
-- `startCommand`: `python -m http.server $PORT --bind 0.0.0.0`
+- `startCommand`: `make run HOST=0.0.0.0 PORT=$PORT PYTHON=python3`
 - `healthcheckPath`: `/`
 
 Railway config-as-code reference: [https://docs.railway.com/config-as-code](https://docs.railway.com/config-as-code)
