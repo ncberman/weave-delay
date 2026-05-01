@@ -6,6 +6,23 @@ const wclUserGraphqlUrl = "https://www.warcraftlogs.com/api/v2/user";
 let summaryGenerationToken = 0;
 
 let nextRequestTime = 0;
+const metricsSignatureVersion = "sig-v2";
+
+function getStorageLayer() {
+    if (typeof window !== "undefined" && window.weaveDelayStorage) {
+        return window.weaveDelayStorage;
+    }
+    return null;
+}
+
+function getNumericInputValue(inputId, fallbackValue) {
+    const el = document.getElementById(inputId);
+    const value = Number(el ? el.value : fallbackValue);
+    if (!Number.isFinite(value)) {
+        return fallbackValue;
+    }
+    return value;
+}
 
 function getParameterByName(name, url = window.location.href) {
     name = name.replace(/[\[\]]/g, '\\$&');
@@ -40,13 +57,13 @@ function calculateMedian(values) {
 
 function getMetricsConfigSignature() {
     const instants = localStorage.getItem("instants") === "true" ? "1" : "0";
-    const outliersInput = document.getElementById("outliers");
-    const y12Input = document.getElementById("y12");
-    const y3Input = document.getElementById("y3");
-    const outliers = outliersInput ? String(Number(outliersInput.value) || 0) : "0";
-    const y12 = y12Input ? String(Number(y12Input.value) || 0) : "0";
-    const y3 = y3Input ? String(Number(y3Input.value) || 0) : "0";
-    return [instants, outliers, y12, y3].join("|");
+    const outliers = String(getNumericInputValue("outliers", 0) || 0);
+    const y12 = String(getNumericInputValue("y12", 0) || 0);
+    const y3 = String(getNumericInputValue("y3", 0) || 0);
+    const ignoreShortest = String(Math.max(0, Math.floor(getNumericInputValue("ignore_shortest", 0))));
+    const ignoreLongest = String(Math.max(0, Math.floor(getNumericInputValue("ignore_longest", 0))));
+    const deathCutoff = String(Math.max(0, Math.floor(getNumericInputValue("death_cutoff", 0))));
+    return [metricsSignatureVersion, instants, outliers, y12, y3, ignoreShortest, ignoreLongest, deathCutoff].join("|");
 }
 
 function formatDurationMs(durationMs) {
@@ -97,7 +114,7 @@ async function fetchWCLUserGraphql(query, variables = {}) {
         if (typeof disconnectWarcraftLogs === "function") {
             disconnectWarcraftLogs();
         }
-        throw new Error("Warcraft Logs authorization failed. Reconnect Warcraft Logs in Settings.");
+        throw new Error("Warcraft Logs authorization failed. Click the auth panel to reconnect.");
     }
     if (!response.ok) {
         throw new Error("Fetch error (" + response.status + ").");
@@ -282,6 +299,76 @@ query ReportCasts($code: String!, $fightIDs: [Int!], $sourceID: Int, $startTime:
     };
 }
 
+function normalizeDeathEvent(rawEvent) {
+    if (!rawEvent) {
+        return null;
+    }
+    const timestamp = Number(rawEvent.timestamp);
+    if (!Number.isFinite(timestamp)) {
+        return null;
+    }
+    const targetId = Number(
+        rawEvent.targetID ??
+        rawEvent.targetId ??
+        (rawEvent.target && rawEvent.target.id) ??
+        Number.NaN
+    );
+    const targetName = rawEvent.target && rawEvent.target.name
+        ? rawEvent.target.name
+        : (rawEvent.targetName ? String(rawEvent.targetName) : "");
+    return {
+        timestamp: timestamp,
+        targetId: Number.isFinite(targetId) ? targetId : null,
+        targetName: targetName
+    };
+}
+
+async function fetchFightDeaths(reportCode, fightId, startTime, endTime) {
+    let allDeaths = [];
+    let pageStart = startTime;
+
+    while (true) {
+        const data = await fetchWCLUserGraphql(`
+query ReportDeaths($code: String!, $fightIDs: [Int!], $startTime: Float, $endTime: Float, $viewOptions: Int) {
+  reportData {
+    report(code: $code) {
+      events(dataType: Deaths, fightIDs: $fightIDs, startTime: $startTime, endTime: $endTime, viewOptions: $viewOptions, translate: true) {
+        data
+        nextPageTimestamp
+      }
+    }
+  }
+}`, {
+            code: reportCode,
+            fightIDs: [Number(fightId)],
+            startTime: Number(pageStart),
+            endTime: Number(endTime),
+            viewOptions: 66
+        });
+
+        const eventsPayload = data && data.reportData && data.reportData.report
+            ? data.reportData.report.events
+            : null;
+        if (!eventsPayload) {
+            throw new Error("Could not load death events.");
+        }
+
+        const rawEvents = eventsPayload.data || [];
+        const pageEvents = rawEvents
+            .map(event => normalizeDeathEvent(event))
+            .filter(Boolean);
+        allDeaths = allDeaths.concat(pageEvents);
+
+        if (!eventsPayload.nextPageTimestamp || eventsPayload.nextPageTimestamp >= endTime) {
+            break;
+        }
+        pageStart = eventsPayload.nextPageTimestamp;
+    }
+
+    allDeaths.sort((a, b) => a.timestamp - b.timestamp);
+    return { deaths: allDeaths };
+}
+
 class Report {
     constructor(reportId, withTrash) {
         this.reportId = reportId;
@@ -290,13 +377,43 @@ class Report {
         this.fightHunterMetrics = {};
         this.fightAllCasts = {};
         this.summaryCache = {};
+        this.storage = getStorageLayer();
     }
 
     async fetchData() {
         if ("data" in this) {
             return;
         }
-        this.data = await fetchReportMeta(this.reportId);
+        let cachedReport = null;
+        if (this.storage) {
+            try {
+                cachedReport = await this.storage.getReport(this.reportId);
+            } catch (e) {
+                console.warn("IndexedDB report read failed:", e);
+            }
+        }
+        if (cachedReport && cachedReport.fightsMeta && cachedReport.actorsMeta && cachedReport.abilitiesMeta) {
+            this.data = {
+                fights: cachedReport.fightsMeta,
+                actors: cachedReport.actorsMeta,
+                abilityByGameId: cachedReport.abilitiesMeta
+            };
+        } else {
+            this.data = await fetchReportMeta(this.reportId);
+            if (this.storage) {
+                this.storage.putReport({
+                    reportCode: this.reportId,
+                    title: "",
+                    owner: "",
+                    startTime: null,
+                    endTime: null,
+                    fightsMeta: this.data.fights || [],
+                    actorsMeta: this.data.actors || [],
+                    abilitiesMeta: this.data.abilityByGameId || {},
+                    fetchedAt: Date.now()
+                }).catch(e => console.warn("IndexedDB report write failed:", e));
+            }
+        }
         this.abilityByGameId = this.data.abilityByGameId || {};
         this.actors = this.data.actors || [];
         this.players = this.actors.filter(actor => actor && actor.type === "Player");
@@ -321,13 +438,30 @@ class Report {
             return this.fightHunterCasts[fightKey][hunterKey];
         }
 
+        if (this.storage) {
+            try {
+                const cachedHunterEvents = await this.storage.getHunterEvents(this.reportId, fight.id, hunter.id);
+                if (cachedHunterEvents && Array.isArray(cachedHunterEvents.castsNormalized)) {
+                    const allFightCastsForDeaths = await this.getFightAllCasts(fight);
+                    const cachedResult = {
+                        events: cachedHunterEvents.castsNormalized,
+                        deaths: allFightCastsForDeaths.deaths || []
+                    };
+                    this.fightHunterCasts[fightKey][hunterKey] = cachedResult;
+                    return cachedResult;
+                }
+            } catch (e) {
+                console.warn("IndexedDB hunter events read failed:", e);
+            }
+        }
+
         const allFightCasts = await this.getFightAllCasts(fight);
         const filteredEvents = (allFightCasts.events || []).filter(event => event.sourceID === Number(hunter.id));
-
-        let result = { events: filteredEvents };
+        const deaths = allFightCasts.deaths || [];
+        let result = { events: filteredEvents, deaths: deaths };
         // Fallback for schemas that don't include source ID in event rows.
         if (filteredEvents.length === 0 && (allFightCasts.events || []).some(event => event.sourceID === null)) {
-            result = await fetchFightCasts(
+            const sourcedCasts = await fetchFightCasts(
                 this.reportId,
                 fight.id,
                 hunter.id,
@@ -335,9 +469,21 @@ class Report {
                 fight.end_time,
                 this.abilityByGameId
             );
+            result = { events: sourcedCasts.events || [], deaths: deaths };
         }
 
         this.fightHunterCasts[fightKey][hunterKey] = result;
+        if (this.storage) {
+            this.storage.putHunterEvents({
+                id: this.storage.getHunterKey(this.reportId, fight.id, hunter.id),
+                reportCode: this.reportId,
+                fightId: String(fight.id),
+                hunterId: String(hunter.id),
+                castsNormalized: result.events || [],
+                derivedFromFightEvents: true,
+                computedAt: Date.now()
+            }).catch(e => console.warn("IndexedDB hunter events write failed:", e));
+        }
         return result;
     }
 
@@ -346,31 +492,85 @@ class Report {
         if (this.fightAllCasts[fightKey]) {
             return this.fightAllCasts[fightKey];
         }
-        const result = await fetchFightCasts(
-            this.reportId,
-            fight.id,
-            null,
-            fight.start_time,
-            fight.end_time,
-            this.abilityByGameId
-        );
+        if (this.storage) {
+            try {
+                const cachedFightEvents = await this.storage.getFightEvents(this.reportId, fight.id);
+                if (cachedFightEvents && Array.isArray(cachedFightEvents.castsNormalized)) {
+                    const cachedResult = {
+                        events: cachedFightEvents.castsNormalized,
+                        deaths: Array.isArray(cachedFightEvents.deaths) ? cachedFightEvents.deaths : []
+                    };
+                    this.fightAllCasts[fightKey] = cachedResult;
+                    return cachedResult;
+                }
+            } catch (e) {
+                console.warn("IndexedDB fight events read failed:", e);
+            }
+        }
+
+        const [castsResult, deathsResult] = await Promise.all([
+            fetchFightCasts(
+                this.reportId,
+                fight.id,
+                null,
+                fight.start_time,
+                fight.end_time,
+                this.abilityByGameId
+            ),
+            fetchFightDeaths(
+                this.reportId,
+                fight.id,
+                fight.start_time,
+                fight.end_time
+            )
+        ]);
+        const result = {
+            events: castsResult.events || [],
+            deaths: deathsResult.deaths || []
+        };
         this.fightAllCasts[fightKey] = result;
+        if (this.storage) {
+            this.storage.putFightEvents({
+                id: this.storage.getFightKey(this.reportId, fight.id),
+                reportCode: this.reportId,
+                fightId: String(fight.id),
+                startTime: fight.start_time,
+                endTime: fight.end_time,
+                castsNormalized: result.events || [],
+                deaths: result.deaths || [],
+                source: "wcl",
+                fetchedAt: Date.now()
+            }).catch(e => console.warn("IndexedDB fight events write failed:", e));
+        }
         return result;
     }
 
-    getCachedFightHunterMetrics(fight, hunter, signature) {
+    async getCachedFightHunterMetrics(fight, hunter, signature) {
         const fightKey = String(fight.id);
         const hunterKey = String(hunter.id);
-        if (!this.fightHunterMetrics[fightKey]) {
+        if (this.fightHunterMetrics[fightKey] && this.fightHunterMetrics[fightKey][hunterKey]) {
+            const memoryValue = this.fightHunterMetrics[fightKey][hunterKey][signature];
+            if (memoryValue !== undefined) {
+                return memoryValue;
+            }
+        }
+        if (!this.storage) {
             return null;
         }
-        if (!this.fightHunterMetrics[fightKey][hunterKey]) {
+        try {
+            const cached = await this.storage.getMetricsSnapshot(this.reportId, fight.id, hunter.id, signature);
+            if (!cached || !cached.metrics) {
+                return null;
+            }
+            this.setCachedFightHunterMetricsInMemory(fight, hunter, signature, cached.metrics);
+            return cached.metrics;
+        } catch (e) {
+            console.warn("IndexedDB metrics read failed:", e);
             return null;
         }
-        return this.fightHunterMetrics[fightKey][hunterKey][signature] ?? null;
     }
 
-    setCachedFightHunterMetrics(fight, hunter, signature, metrics) {
+    setCachedFightHunterMetricsInMemory(fight, hunter, signature, metrics) {
         const fightKey = String(fight.id);
         const hunterKey = String(hunter.id);
         if (!this.fightHunterMetrics[fightKey]) {
@@ -382,7 +582,32 @@ class Report {
         this.fightHunterMetrics[fightKey][hunterKey][signature] = metrics;
     }
 
-    buildMetricsFromEvents(events, startTime) {
+    async setCachedFightHunterMetrics(fight, hunter, signature, metrics) {
+        this.setCachedFightHunterMetricsInMemory(fight, hunter, signature, metrics);
+        if (!this.storage || !metrics) {
+            return;
+        }
+        this.storage.putMetricsSnapshot({
+            id: this.storage.getMetricsKey(this.reportId, fight.id, hunter.id, signature),
+            reportCode: this.reportId,
+            fightId: String(fight.id),
+            hunterId: String(hunter.id),
+            metricsSignatureV2: signature,
+            knobs: {
+                instants: localStorage.getItem("instants") === "true",
+                outliersMs: getNumericInputValue("outliers", 0),
+                y12: getNumericInputValue("y12", 2500),
+                y3: getNumericInputValue("y3", 4000),
+                ignoreShortestX: Math.max(0, Math.floor(getNumericInputValue("ignore_shortest", 0))),
+                ignoreLongestX: Math.max(0, Math.floor(getNumericInputValue("ignore_longest", 0))),
+                deathCutoffCount: Math.max(0, Math.floor(getNumericInputValue("death_cutoff", 0)))
+            },
+            metrics: metrics,
+            computedAt: Date.now()
+        }).catch(e => console.warn("IndexedDB metrics write failed:", e));
+    }
+
+    buildMetricsFromEvents(events, startTime, deaths) {
         let mutable_casts = events
             .filter(cast => cast && cast.ability && cast.ability.name && Number.isFinite(cast.timestamp))
             .slice()
@@ -393,12 +618,27 @@ class Report {
         }
 
         const instantsEnabled = localStorage.getItem("instants") === "true";
-        const outliersInput = document.getElementById("outliers");
-        const y12Input = document.getElementById("y12");
-        const y3Input = document.getElementById("y3");
-        const outlierThreshold = Number(outliersInput ? outliersInput.value : 0) || 0;
-        const y12 = Number(y12Input ? y12Input.value : 2500) || 2500;
-        const y3 = Number(y3Input ? y3Input.value : 4000) || 4000;
+        const outlierThreshold = getNumericInputValue("outliers", 0) || 0;
+        const y12 = getNumericInputValue("y12", 2500) || 2500;
+        const y3 = getNumericInputValue("y3", 4000) || 4000;
+        const ignoreShortestX = Math.max(0, Math.floor(getNumericInputValue("ignore_shortest", 0)));
+        const ignoreLongestX = Math.max(0, Math.floor(getNumericInputValue("ignore_longest", 0)));
+        const deathCutoffCount = Math.max(0, Math.floor(getNumericInputValue("death_cutoff", 0)));
+
+        if (deathCutoffCount > 0 && Array.isArray(deaths) && deaths.length > 0) {
+            const sortedDeaths = deaths
+                .filter(death => death && Number.isFinite(Number(death.timestamp)))
+                .slice()
+                .sort((a, b) => a.timestamp - b.timestamp);
+            if (sortedDeaths.length >= deathCutoffCount) {
+                const cutoffTimestamp = Number(sortedDeaths[deathCutoffCount - 1].timestamp);
+                mutable_casts = mutable_casts.filter(cast => cast.timestamp <= cutoffTimestamp);
+            }
+        }
+
+        if (mutable_casts.length === 0) {
+            return null;
+        }
 
         const meleeSet = new Set(["Melee", "Raptor Strike"]);
         const whitelistSet = instantsEnabled
@@ -454,6 +694,50 @@ class Report {
         ability_weave_time = filteredAbilityToWeave;
         weave_ability_time = filteredWeaveToAbility;
 
+        const trimCount = ignoreShortestX + ignoreLongestX;
+        if (trimCount > 0 && total_weave_time.length > 0) {
+            const rankedIndices = total_weave_time
+                .map((value, idx) => ({ idx: idx, value: value }))
+                .sort((a, b) => {
+                    if (a.value === b.value) {
+                        return a.idx - b.idx;
+                    }
+                    return a.value - b.value;
+                });
+            const removeIndices = new Set();
+            const shortestToDrop = Math.min(ignoreShortestX, rankedIndices.length);
+            for (let i = 0; i < shortestToDrop; i++) {
+                removeIndices.add(rankedIndices[i].idx);
+            }
+            let longestToDrop = Math.min(ignoreLongestX, rankedIndices.length - removeIndices.size);
+            for (let i = rankedIndices.length - 1; i >= 0 && longestToDrop > 0; i--) {
+                const idx = rankedIndices[i].idx;
+                if (!removeIndices.has(idx)) {
+                    removeIndices.add(idx);
+                    longestToDrop -= 1;
+                }
+            }
+
+            const keptTimestamps = [];
+            const keptAbilityToWeave = [];
+            const keptWeaveToAbility = [];
+            const keptTotal = [];
+            for (let i = 0; i < total_weave_time.length; i++) {
+                if (removeIndices.has(i)) {
+                    continue;
+                }
+                keptTimestamps.push(timestamps_weave[i]);
+                keptAbilityToWeave.push(ability_weave_time[i]);
+                keptWeaveToAbility.push(weave_ability_time[i]);
+                keptTotal.push(total_weave_time[i]);
+            }
+
+            timestamps_weave = keptTimestamps;
+            ability_weave_time = keptAbilityToWeave;
+            weave_ability_time = keptWeaveToAbility;
+            total_weave_time = keptTotal;
+        }
+
         let average1 = (ability_weave_time.reduce((a, b) => a + b, 0) / ability_weave_time.length) || 0;
         let average2 = (weave_ability_time.reduce((a, b) => a + b, 0) / ability_weave_time.length) || 0;
         let average3 = (total_weave_time.reduce((a, b) => a + b, 0) / ability_weave_time.length) || 0;
@@ -506,6 +790,17 @@ class Report {
         if (this.summaryCache[summaryCacheKey]) {
             return this.summaryCache[summaryCacheKey];
         }
+        if (this.storage) {
+            try {
+                const cachedSummary = await this.storage.getEncounterSummary(this.reportId, summaryCacheKey);
+                if (cachedSummary && Array.isArray(cachedSummary.encounterGroups)) {
+                    this.summaryCache[summaryCacheKey] = cachedSummary.encounterGroups;
+                    return cachedSummary.encounterGroups;
+                }
+            } catch (e) {
+                console.warn("IndexedDB summary read failed:", e);
+            }
+        }
         const eligibleFights = this.data.fights.filter(fight => trashEnabled || fight.boss != 0);
         const hunters = this.getHunters();
         const encounterMap = {};
@@ -531,10 +826,10 @@ class Report {
                 let allTotalWeaveValues = [];
                 for (const fight of group.fights) {
                     const casts = await this.getFightHunterCasts(fight, hunter);
-                    const cachedMetrics = this.getCachedFightHunterMetrics(fight, hunter, metricsSignature);
-                    const metrics = cachedMetrics || this.buildMetricsFromEvents(casts.events || [], fight.start_time);
+                    const cachedMetrics = await this.getCachedFightHunterMetrics(fight, hunter, metricsSignature);
+                    const metrics = cachedMetrics || this.buildMetricsFromEvents(casts.events || [], fight.start_time, casts.deaths || []);
                     if (!cachedMetrics) {
-                        this.setCachedFightHunterMetrics(fight, hunter, metricsSignature, metrics);
+                        await this.setCachedFightHunterMetrics(fight, hunter, metricsSignature, metrics);
                     }
                     if (!metrics || !metrics.totalWeaveValues || metrics.totalWeaveValues.length === 0) {
                         continue;
@@ -571,6 +866,16 @@ class Report {
         }
 
         this.summaryCache[summaryCacheKey] = encounterGroups;
+        if (this.storage) {
+            this.storage.putEncounterSummary({
+                id: this.storage.getSummaryKey(this.reportId, summaryCacheKey),
+                reportCode: this.reportId,
+                summarySignatureV2: summaryCacheKey,
+                withTrash: trashEnabled,
+                encounterGroups: encounterGroups,
+                computedAt: Date.now()
+            }).catch(e => console.warn("IndexedDB summary write failed:", e));
+        }
         return encounterGroups;
     }
 
@@ -597,11 +902,11 @@ class Report {
             const metricsSignature = getMetricsConfigSignature();
             for (const hunter of hunters) {
                 const panel = createHunterPanel(hunterPlots, hunter.name + " (" + hunter.id + ")");
-                let metrics = this.getCachedFightHunterMetrics(fight, hunter, metricsSignature);
+                let metrics = await this.getCachedFightHunterMetrics(fight, hunter, metricsSignature);
                 if (metrics === null) {
                     const casts = await this.getFightHunterCasts(fight, hunter);
-                    metrics = this.buildMetricsFromEvents(casts.events || [], fight.start_time);
-                    this.setCachedFightHunterMetrics(fight, hunter, metricsSignature, metrics);
+                    metrics = this.buildMetricsFromEvents(casts.events || [], fight.start_time, casts.deaths || []);
+                    await this.setCachedFightHunterMetrics(fight, hunter, metricsSignature, metrics);
                 }
                 if (!metrics) {
                     panel.headerName.textContent = hunter.name + " (" + hunter.id + ")";
@@ -899,6 +1204,10 @@ function enableInput(enable = true) {
     let a = ["input", "button", "select"].map(s => document.querySelectorAll(s));
     for (let b of a) {
         for (let el of b) {
+            if (el && el.id === "oauth_notifier") {
+                // Keep auth panel interactive so sign-in/sign-out always works.
+                continue;
+            }
             el.disabled = !enable;
         }
     }
@@ -921,3 +1230,33 @@ async function selectFight(index) {
     let [reportId, fightId] = information.split(";");
     await reports[reportId].analyzeFight(fightId);
 }
+
+function clearLoadedReportCache() {
+    for (const reportId of Object.keys(reports)) {
+        delete reports[reportId];
+    }
+    summaryGenerationToken += 1;
+
+    const fightSelect = document.getElementById("fightSelect");
+    if (fightSelect) {
+        fightSelect.innerHTML = "";
+    }
+    const fightSelectorBlock = document.getElementById("fightSelectorBlock");
+    if (fightSelectorBlock) {
+        fightSelectorBlock.style.display = "none";
+    }
+    const summaryRoot = document.getElementById("reportSummary");
+    const summaryContent = document.getElementById("reportSummaryContent");
+    if (summaryContent) {
+        summaryContent.textContent = "";
+    }
+    if (summaryRoot) {
+        summaryRoot.style.display = "none";
+    }
+    const hunterPlots = document.getElementById("hunterPlots");
+    if (hunterPlots) {
+        hunterPlots.innerHTML = "";
+    }
+}
+
+window.clearLoadedReportCache = clearLoadedReportCache;

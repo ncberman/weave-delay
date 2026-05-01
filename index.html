@@ -17,7 +17,8 @@
         content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://d3js.org; style-src 'self' 'unsafe-inline'; connect-src 'self' https://www.warcraftlogs.com https://www.google-analytics.com https://*.google-analytics.com https://*.googletagmanager.com https://*.doubleclick.net; img-src 'self' data: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <script src="oauth.js"></script>
-    <script src="weave_delay.js?v=20260424f"></script>
+    <script src="storage.js?v=20260501a"></script>
+    <script src="weave_delay.js?v=20260501a"></script>
     <script src="front.js?v=20260424b"></script>
     <script src="settings.js"></script>
     <script src="https://d3js.org/d3.v4.js"></script>
@@ -144,6 +145,76 @@
             gap: 10px;
         }
 
+        .top-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: start;
+            gap: 16px;
+            max-width: 1360px;
+        }
+
+        .report-panel {
+            min-width: 420px;
+            max-width: 960px;
+        }
+
+        .filters-panel {
+            width: 360px;
+            justify-self: end;
+            align-self: start;
+            border: 1px solid #555;
+            padding: 10px 12px;
+            background: #1f1f1f;
+        }
+
+        .filters-panel legend {
+            font-weight: 700;
+        }
+
+        .filters-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-rows: repeat(2, auto);
+            gap: 8px;
+        }
+
+        .filter-cell {
+            border: 1px solid #4a4a4a;
+            background: #252525;
+            padding: 6px;
+            min-height: 58px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 4px;
+        }
+
+        .filter-cell label {
+            font-size: 12px;
+            line-height: 1.2;
+        }
+
+        #input .filter-cell input {
+            width: auto;
+            min-width: 0;
+        }
+
+        #input .filter-cell input[type="number"] {
+            width: 8ch;
+            min-width: 8ch;
+        }
+
+        .filter-cell-checkbox {
+            flex-direction: row;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .filter-cell-checkbox input[type="checkbox"] {
+            width: auto;
+            min-width: 0;
+        }
+
         .loading-spinner {
             width: 16px;
             height: 16px;
@@ -152,6 +223,54 @@
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
             display: none;
+        }
+
+        .oauth-notifier {
+            margin-top: 10px;
+            padding: 8px 10px;
+            border-radius: 4px;
+            border: 1px solid #666;
+            max-width: 960px;
+            width: 100%;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: left;
+            transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+        }
+
+        .oauth-notifier-connected {
+            color: #d9fbe1;
+            background-color: #1f4b2e;
+            border-color: #2e7a45;
+        }
+
+        .oauth-notifier-expired {
+            color: #e6e6e6;
+            background-color: #424242;
+            border-color: #666;
+        }
+
+        .oauth-notifier-disconnected {
+            color: #e6e6e6;
+            background-color: #424242;
+            border-color: #666;
+        }
+
+        .oauth-notifier-interactable {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .oauth-notifier-interactable:hover,
+        .oauth-notifier-interactable:focus-visible {
+            border-color: #9a9a9a;
+            background-color: #5a5a5a;
+            color: #fff;
+            outline: none;
+        }
+
+        #oauth_notifier {
+            width: 100%;
         }
 
         @keyframes spin {
@@ -247,15 +366,51 @@
 
 <body onload="loadPage()">
     <div id="input" style="position: relative; right: -15px; top: 15px;">
-        <table>
-            <tr>
-                <td>Report ID</td>
-                <td><input type="text" id="code"></td>
-            </tr>
-        </table>
-        <div class="submit-row">
-            <button onclick="selectReport()">Submit</button>
-            <span id="loadingSpinner" class="loading-spinner" title="Loading"></span>
+        <div class="top-layout">
+            <div class="report-panel">
+                <table>
+                    <tr>
+                        <td>Report ID</td>
+                        <td><input type="text" id="code"></td>
+                    </tr>
+                </table>
+                <div class="submit-row">
+                    <button onclick="selectReport()">Submit</button>
+                    <span id="loadingSpinner" class="loading-spinner" title="Loading"></span>
+                </div>
+                <button id="oauth_notifier" type="button" class="oauth-notifier oauth-notifier-disconnected oauth-notifier-interactable" aria-live="polite">
+                    Not Signed In
+                </button>
+            </div>
+            <fieldset class="filters-panel" id="filtersPanel">
+                <legend>Filters</legend>
+                <div class="filters-grid">
+                    <div class="filter-cell filter-cell-checkbox">
+                        <label for="instants">Instant casts</label>
+                        <input type="checkbox" id="instants" checked="">
+                    </div>
+                    <div class="filter-cell">
+                        <label for="outliers">Outliers (ms)</label>
+                        <input type="number" id="outliers" min="1000" max="10000" value="5000" step="500">
+                    </div>
+                    <div class="filter-cell">
+                        <label for="ignore_shortest">Ignore shortest</label>
+                        <input type="number" id="ignore_shortest" min="0" max="200" value="0" step="1">
+                    </div>
+                    <div class="filter-cell">
+                        <label for="ignore_longest">Ignore longest</label>
+                        <input type="number" id="ignore_longest" min="0" max="200" value="0" step="1">
+                    </div>
+                    <div class="filter-cell">
+                        <label for="death_cutoff">Ignore after deaths</label>
+                        <input type="number" id="death_cutoff" min="0" max="40" value="0" step="1">
+                    </div>
+                    <div class="filter-cell filter-cell-checkbox">
+                        <label for="trash_enabled">Include trash</label>
+                        <input type="checkbox" id="trash_enabled" checked="">
+                    </div>
+                </div>
+            </fieldset>
         </div>
         <div id="reportSummary" style="display:none">
             <div id="reportSummaryContent"></div>
@@ -270,55 +425,13 @@
         <div id="hunterPlots"></div>
     </div>
 
-    <div id="info" style="position: relative; right: -15px; top: 15px;"">
+    <div id="info" style="position: relative; right: -15px; top: 15px;">
         <button onclick=" showAndHideDisclaimer()">About</button>
         <button onclick="showAndHideChangelog()">Changelog</button>
         <button onclick="showAndHideTutorial()">Tutorial</button>
-        <button onclick="showAndHideSettings()">Settings</button>
         <div id="settings" style="display:none">
-            <br>
-            <fieldset>
-                <fieldset>
-                    <legend>General settings</legend>
-                    <label for="instants">Enable instant casts (Arcane/Scorpid/Serpent)</label>
-                    <input type="checkbox" id="instants" checked="">
-                    <br>
-                    <label for="outliers">Remove outliers over</label>
-                    <input type="number" id="outliers" min="1000" max="10000" value="5000" step="500"></input>
-                    <br>
-                    <label for="trash_enabled">Add trash fights to the list</label>
-                    <input type="checkbox" id="trash_enabled" checked="">
-                    <br>
-                    <label for="oauth_client_id">Warcraft Logs OAuth Client ID</label>
-                    <input type="text" id="oauth_client_id" placeholder="Enter your OAuth client id"></input>
-                    <br>
-                    <button type="button" onclick="connectWarcraftLogs()">Connect Warcraft Logs</button>
-                    <button type="button" onclick="disconnectWarcraftLogs()">Disconnect</button>
-                    <br>
-                    <span id="oauth_status">Warcraft Logs auth: disconnected</span>
-                </fieldset>
-                <br>
-                <fieldset>
-                    <legend>Graph Settings</legend>
-                    <div id="graphsettings">
-                        <fieldset>
-                            <legend>Graphs 1&2</legend>
-                            <label for="y12">y-limit</label>
-                            <input type="number" id="y12" min="500" max="5000" value="2500" step="100"></input>
-                        </fieldset>
-                        <fieldset>
-                            <legend>Graph 3</legend>
-                            <label for="y3">y-limit</label>
-                            <input type="number" id="y3" min="1000" max="7000" value="4000" step="100"></input>
-                        </fieldset>
-                    </div>
-                </fieldset>
-                <legend>Settings</legend>
-                <br>
-                <button onclick="saveSettings()">Save</button>
-                <button onclick="restoreDefaults()">Restore Default</button>
-
-            </fieldset>
+            <input type="number" id="y12" min="500" max="5000" value="2500" step="100">
+            <input type="number" id="y3" min="1000" max="7000" value="4000" step="100">
         </div>
         <div id="disclaimer" style="display:block">
             <p>This tool is able to calculate the delay between your weaves and your normal shots and abilities.
@@ -380,8 +493,8 @@
                     18yHr2ZVbxGXYkaR)
                 </li>
                 <li>Paste your ID/report URL in <b>Report ID</b> and click <b>Submit</b>.</li>
-                <li>In <b>Settings</b>, enter your Warcraft Logs OAuth Client ID and click <b>Connect Warcraft Logs</b>
-                    if you are not already connected.</li>
+                <li>Click the <b>Not Signed In</b> auth panel, enter your Warcraft Logs OAuth Client ID, and finish login.
+                </li>
                 <li>Select the fight you want to inspect from the fight dropdown.</li>
                 <li>Enjoy the graphs</li>
             </ol>
