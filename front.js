@@ -65,6 +65,9 @@ function initializeFilterPanelInteractions() {
 async function loadPage() {
     scroll(0, 0);
     loadSettings();
+    if (typeof syncAuthStateFromLocalStorageOnLoad === "function") {
+        syncAuthStateFromLocalStorageOnLoad();
+    }
     initializeFilterPanelInteractions();
     if (typeof initializeOAuthPanelInteractions === "function") {
         initializeOAuthPanelInteractions();

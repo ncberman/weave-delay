@@ -139,6 +139,25 @@ function refreshAuthStatusUI() {
     refreshAuthNotifierUI(statusDetails);
 }
 
+function syncAuthStateFromLocalStorageOnLoad() {
+    const rawSession = localStorage.getItem(oauthStorageKeys.session);
+    if (!rawSession) {
+        clearOAuthSession();
+        clearPendingOAuthState();
+        refreshAuthStatusUI();
+        return false;
+    }
+    const parsedSession = getStoredOAuthSession();
+    if (!parsedSession || !parsedSession.accessToken) {
+        clearOAuthSession();
+        clearPendingOAuthState();
+        refreshAuthStatusUI();
+        return false;
+    }
+    refreshAuthStatusUI();
+    return true;
+}
+
 function promptForOAuthClientId(currentClientId) {
     const prompted = window.prompt("Enter your Warcraft Logs OAuth client ID:", currentClientId || "");
     if (prompted === null) {
@@ -185,6 +204,7 @@ function initializeOAuthPanelInteractions() {
 }
 
 function initializeOAuthUIOnReady() {
+    syncAuthStateFromLocalStorageOnLoad();
     initializeOAuthPanelInteractions();
     refreshAuthStatusUI();
 }
@@ -356,6 +376,7 @@ window.refreshAuthAccessToken = refreshAuthAccessToken;
 window.initializeOAuthFromUrl = initializeOAuthFromUrl;
 window.refreshAuthStatusUI = refreshAuthStatusUI;
 window.initializeOAuthPanelInteractions = initializeOAuthPanelInteractions;
+window.syncAuthStateFromLocalStorageOnLoad = syncAuthStateFromLocalStorageOnLoad;
 
 if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", initializeOAuthUIOnReady);
