@@ -73,6 +73,23 @@ class WeaveDelayStorage {
         });
     }
 
+    async clearAll() {
+        const db = await this.open();
+        const storeNames = Array.from(db.objectStoreNames);
+        if (storeNames.length === 0) {
+            return;
+        }
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(storeNames, "readwrite");
+            for (const storeName of storeNames) {
+                tx.objectStore(storeName).clear();
+            }
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        });
+    }
+
     getFightKey(reportCode, fightId) {
         return String(reportCode) + ":" + String(fightId);
     }

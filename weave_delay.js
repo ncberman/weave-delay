@@ -114,7 +114,7 @@ async function fetchWCLUserGraphql(query, variables = {}) {
         if (typeof disconnectWarcraftLogs === "function") {
             disconnectWarcraftLogs();
         }
-        throw new Error("Warcraft Logs authorization failed. Reconnect Warcraft Logs in Settings.");
+        throw new Error("Warcraft Logs authorization failed. Click the auth panel to reconnect.");
     }
     if (!response.ok) {
         throw new Error("Fetch error (" + response.status + ").");
@@ -1204,6 +1204,10 @@ function enableInput(enable = true) {
     let a = ["input", "button", "select"].map(s => document.querySelectorAll(s));
     for (let b of a) {
         for (let el of b) {
+            if (el && el.id === "oauth_notifier") {
+                // Keep auth panel interactive so sign-in/sign-out always works.
+                continue;
+            }
             el.disabled = !enable;
         }
     }
@@ -1226,3 +1230,33 @@ async function selectFight(index) {
     let [reportId, fightId] = information.split(";");
     await reports[reportId].analyzeFight(fightId);
 }
+
+function clearLoadedReportCache() {
+    for (const reportId of Object.keys(reports)) {
+        delete reports[reportId];
+    }
+    summaryGenerationToken += 1;
+
+    const fightSelect = document.getElementById("fightSelect");
+    if (fightSelect) {
+        fightSelect.innerHTML = "";
+    }
+    const fightSelectorBlock = document.getElementById("fightSelectorBlock");
+    if (fightSelectorBlock) {
+        fightSelectorBlock.style.display = "none";
+    }
+    const summaryRoot = document.getElementById("reportSummary");
+    const summaryContent = document.getElementById("reportSummaryContent");
+    if (summaryContent) {
+        summaryContent.textContent = "";
+    }
+    if (summaryRoot) {
+        summaryRoot.style.display = "none";
+    }
+    const hunterPlots = document.getElementById("hunterPlots");
+    if (hunterPlots) {
+        hunterPlots.innerHTML = "";
+    }
+}
+
+window.clearLoadedReportCache = clearLoadedReportCache;

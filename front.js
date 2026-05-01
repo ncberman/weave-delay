@@ -48,16 +48,34 @@ function showAndHideSettings() {
     hide("tutorial");
 }
 
+function initializeFilterPanelInteractions() {
+    const filterIds = ["instants", "outliers", "ignore_shortest", "ignore_longest", "death_cutoff", "trash_enabled"];
+    for (const id of filterIds) {
+        const el = document.getElementById(id);
+        if (!el || el.dataset.filterBound === "true") {
+            continue;
+        }
+        el.dataset.filterBound = "true";
+        el.addEventListener("change", () => {
+            saveSettings();
+        });
+    }
+}
+
 async function loadPage() {
     scroll(0, 0);
     loadSettings();
+    initializeFilterPanelInteractions();
+    if (typeof initializeOAuthPanelInteractions === "function") {
+        initializeOAuthPanelInteractions();
+    }
     try {
         if (typeof initializeOAuthFromUrl === "function") {
             await initializeOAuthFromUrl();
         }
     } catch (e) {
         console.error(e);
-        alert("OAuth error:\n" + e.message + "\n\nReconnect Warcraft Logs in Settings.");
+        alert("OAuth error:\n" + e.message + "\n\nClick the auth panel to reconnect.");
     }
     if (typeof refreshAuthStatusUI === "function") {
         refreshAuthStatusUI();

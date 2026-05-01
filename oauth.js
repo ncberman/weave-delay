@@ -99,20 +99,20 @@ function getOAuthStatusDetails() {
     if (!session || !session.accessToken) {
         return {
             state: "disconnected",
-            text: "Warcraft Logs auth: disconnected"
+            text: "Not Signed In"
         };
     }
     if (isOAuthSessionExpired(session, 0)) {
         return {
             state: "expired",
-            text: "Warcraft Logs auth: expired"
+            text: "Not Signed In"
         };
     }
     const secondsLeft = Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000));
     const minutesLeft = Math.floor(secondsLeft / 60);
     return {
         state: "connected",
-        text: "Warcraft Logs auth: connected (" + minutesLeft + "m left)"
+        text: "Signed In - Click to Disconnect (" + minutesLeft + "m left)"
     };
 }
 
@@ -125,15 +125,68 @@ function refreshAuthNotifierUI(statusDetails) {
     notifierEl.textContent = details.text;
     notifierEl.classList.remove("oauth-notifier-connected", "oauth-notifier-expired", "oauth-notifier-disconnected");
     notifierEl.classList.add("oauth-notifier-" + details.state);
+    notifierEl.classList.add("oauth-notifier-interactable");
+    notifierEl.setAttribute(
+        "title",
+        details.state === "connected"
+            ? "Signed in. Click to disconnect."
+            : "Not signed in. Click to sign in with Warcraft Logs."
+    );
 }
 
 function refreshAuthStatusUI() {
     const statusDetails = getOAuthStatusDetails();
-    const statusEl = document.getElementById("oauth_status");
-    if (statusEl) {
-        statusEl.textContent = statusDetails.text;
-    }
     refreshAuthNotifierUI(statusDetails);
+}
+
+function promptForOAuthClientId(currentClientId) {
+    const prompted = window.prompt("Enter your Warcraft Logs OAuth client ID:", currentClientId || "");
+    if (prompted === null) {
+        return null;
+    }
+    const trimmed = prompted.trim();
+    if (!trimmed) {
+        alert("A Warcraft Logs OAuth client ID is required to sign in.");
+        return null;
+    }
+    return trimmed;
+}
+
+async function handleOAuthPanelClick() {
+    const status = getOAuthStatusDetails();
+    if (status.state === "connected") {
+        const shouldDisconnect = window.confirm("Sign out from Warcraft Logs on this browser?");
+        if (shouldDisconnect) {
+            disconnectWarcraftLogs();
+        }
+        return;
+    }
+    const existingClientId = getOAuthClientId();
+    const clientId = promptForOAuthClientId(existingClientId);
+    if (!clientId) {
+        return;
+    }
+    setOAuthClientId(clientId);
+    await connectWarcraftLogs();
+}
+
+function initializeOAuthPanelInteractions() {
+    const notifierEl = document.getElementById("oauth_notifier");
+    if (!notifierEl || notifierEl.dataset.oauthBound === "true") {
+        return;
+    }
+    notifierEl.dataset.oauthBound = "true";
+    notifierEl.addEventListener("click", () => {
+        handleOAuthPanelClick().catch((e) => {
+            console.error(e);
+            alert("OAuth error:\n" + (e && e.message ? e.message : e));
+        });
+    });
+}
+
+function initializeOAuthUIOnReady() {
+    initializeOAuthPanelInteractions();
+    refreshAuthStatusUI();
 }
 
 function removeOAuthQueryParamsFromUrl() {
@@ -170,7 +223,7 @@ async function exchangeOAuthToken(bodyParams) {
 async function connectWarcraftLogs() {
     const clientId = getOAuthClientId();
     if (!clientId) {
-        alert("Enter your Warcraft Logs OAuth client id in Settings first.");
+        alert("Click the auth panel and enter your Warcraft Logs OAuth client id first.");
         return;
     }
     setOAuthClientId(clientId);
@@ -196,6 +249,14 @@ async function connectWarcraftLogs() {
 function disconnectWarcraftLogs() {
     clearOAuthSession();
     clearPendingOAuthState();
+    if (typeof clearLoadedReportCache === "function") {
+        clearLoadedReportCache();
+    }
+    if (window.weaveDelayStorage && typeof window.weaveDelayStorage.clearAll === "function") {
+        window.weaveDelayStorage.clearAll().catch((e) => {
+            console.warn("Failed to clear local report cache on sign-out.", e);
+        });
+    }
     refreshAuthStatusUI();
 }
 
@@ -225,7 +286,7 @@ async function refreshAuthAccessToken() {
 async function ensureAuthAccessToken() {
     const session = getStoredOAuthSession();
     if (!session || !session.accessToken) {
-        throw new Error("Warcraft Logs is not connected. Use Settings > Connect Warcraft Logs.");
+        throw new Error("Warcraft Logs is not connected. Click the auth panel to sign in.");
     }
     if (!isOAuthSessionExpired(session)) {
         return session.accessToken;
@@ -236,7 +297,7 @@ async function ensureAuthAccessToken() {
     }
     clearOAuthSession();
     refreshAuthStatusUI();
-    throw new Error("Warcraft Logs login expired. Reconnect in Settings.");
+    throw new Error("Warcraft Logs login expired. Click the auth panel to reconnect.");
 }
 
 async function initializeOAuthFromUrl() {
@@ -294,3 +355,10 @@ window.ensureAuthAccessToken = ensureAuthAccessToken;
 window.refreshAuthAccessToken = refreshAuthAccessToken;
 window.initializeOAuthFromUrl = initializeOAuthFromUrl;
 window.refreshAuthStatusUI = refreshAuthStatusUI;
+window.initializeOAuthPanelInteractions = initializeOAuthPanelInteractions;
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initializeOAuthUIOnReady);
+} else {
+    initializeOAuthUIOnReady();
+}

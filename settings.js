@@ -9,7 +9,10 @@ function saveSettings() {
     localStorage.setItem("trash_enabled", document.getElementById("trash_enabled").checked);
     localStorage.setItem("y12", document.getElementById("y12").value);
     localStorage.setItem("y3", document.getElementById("y3").value);
-    localStorage.setItem("oauth_client_id", document.getElementById("oauth_client_id").value.trim());
+    const oauthClientInput = document.getElementById("oauth_client_id");
+    if (oauthClientInput) {
+        localStorage.setItem("oauth_client_id", oauthClientInput.value.trim());
+    }
 
 
 
@@ -37,8 +40,11 @@ function restoreDefaults() {
     document.getElementById("ignore_longest").value = 0;
     localStorage.setItem("death_cutoff", 0);
     document.getElementById("death_cutoff").value = 0;
-    localStorage.setItem("oauth_client_id", "");
-    document.getElementById("oauth_client_id").value = "";
+    const oauthClientInput = document.getElementById("oauth_client_id");
+    if (oauthClientInput) {
+        localStorage.setItem("oauth_client_id", "");
+        oauthClientInput.value = "";
+    }
 
     console.log("local storage");
     for (let i = 0; i < localStorage.length; i++) {
@@ -86,7 +92,10 @@ function loadSettings() {
     document.getElementById("ignore_longest").value = localStorage.getItem("ignore_longest");
     document.getElementById("death_cutoff").value = localStorage.getItem("death_cutoff");
     document.getElementById("trash_enabled").checked = localStorage.getItem("trash_enabled") === "true";
-    document.getElementById("oauth_client_id").value = localStorage.getItem("oauth_client_id");
+    const oauthClientInput = document.getElementById("oauth_client_id");
+    if (oauthClientInput) {
+        oauthClientInput.value = localStorage.getItem("oauth_client_id");
+    }
     if (typeof refreshAuthStatusUI === "function") {
         refreshAuthStatusUI();
     }
