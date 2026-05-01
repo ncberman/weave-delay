@@ -143,14 +143,12 @@ function syncAuthStateFromLocalStorageOnLoad() {
     const rawSession = localStorage.getItem(oauthStorageKeys.session);
     if (!rawSession) {
         clearOAuthSession();
-        clearPendingOAuthState();
         refreshAuthStatusUI();
         return false;
     }
     const parsedSession = getStoredOAuthSession();
     if (!parsedSession || !parsedSession.accessToken) {
         clearOAuthSession();
-        clearPendingOAuthState();
         refreshAuthStatusUI();
         return false;
     }
