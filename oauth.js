@@ -94,25 +94,46 @@ function isOAuthSessionExpired(session, skewMs = 30000) {
     return Date.now() >= (Number(session.expiresAt) - skewMs);
 }
 
-function getOAuthStatusText() {
+function getOAuthStatusDetails() {
     const session = getStoredOAuthSession();
     if (!session || !session.accessToken) {
-        return "Warcraft Logs auth: disconnected";
+        return {
+            state: "disconnected",
+            text: "Warcraft Logs auth: disconnected"
+        };
     }
     if (isOAuthSessionExpired(session, 0)) {
-        return "Warcraft Logs auth: expired";
+        return {
+            state: "expired",
+            text: "Warcraft Logs auth: expired"
+        };
     }
     const secondsLeft = Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000));
     const minutesLeft = Math.floor(secondsLeft / 60);
-    return "Warcraft Logs auth: connected (" + minutesLeft + "m left)";
+    return {
+        state: "connected",
+        text: "Warcraft Logs auth: connected (" + minutesLeft + "m left)"
+    };
+}
+
+function refreshAuthNotifierUI(statusDetails) {
+    const notifierEl = document.getElementById("oauth_notifier");
+    if (!notifierEl) {
+        return;
+    }
+    const details = statusDetails || getOAuthStatusDetails();
+    notifierEl.textContent = details.text;
+    notifierEl.classList.remove("oauth-notifier-connected", "oauth-notifier-expired", "oauth-notifier-disconnected");
+    notifierEl.classList.add("oauth-notifier-" + details.state);
 }
 
 function refreshAuthStatusUI() {
+    const statusDetails = getOAuthStatusDetails();
     const statusEl = document.getElementById("oauth_status");
-    if (!statusEl) {
-        return;
+    if (statusEl) {
+        statusEl.textContent = statusDetails.text;
     }
-    statusEl.textContent = getOAuthStatusText();
+    refreshAuthNotifierUI(statusDetails);
 }
 
 function removeOAuthQueryParamsFromUrl() {

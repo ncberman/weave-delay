@@ -154,6 +154,34 @@
             display: none;
         }
 
+        .oauth-notifier {
+            margin-top: 10px;
+            padding: 8px 10px;
+            border-radius: 4px;
+            border: 1px solid #666;
+            max-width: 960px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .oauth-notifier-connected {
+            color: #d9fbe1;
+            background-color: #1f4b2e;
+            border-color: #2e7a45;
+        }
+
+        .oauth-notifier-expired {
+            color: #ffe8b6;
+            background-color: #533d00;
+            border-color: #8a6a0a;
+        }
+
+        .oauth-notifier-disconnected {
+            color: #f5d0d0;
+            background-color: #4a2424;
+            border-color: #7c3535;
+        }
+
         @keyframes spin {
             from {
                 transform: rotate(0deg);
@@ -257,6 +285,9 @@
             <button onclick="selectReport()">Submit</button>
             <span id="loadingSpinner" class="loading-spinner" title="Loading"></span>
         </div>
+        <output id="oauth_notifier" class="oauth-notifier oauth-notifier-disconnected" aria-live="polite">
+            Warcraft Logs auth: disconnected
+        </output>
         <div id="reportSummary" style="display:none">
             <div id="reportSummaryContent"></div>
         </div>
